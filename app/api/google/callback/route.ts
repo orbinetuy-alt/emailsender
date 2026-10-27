@@ -5,6 +5,7 @@ import { encryptSecret, hashToken, randomToken } from "@/lib/crypto";
 import { googleOAuthClient, GOOGLE_SCOPES } from "@/lib/google";
 import { query, transaction } from "@/lib/db";
 import { SESSION_COOKIE } from "@/lib/auth";
+import { ensureWorkspaceDefaults } from "@/lib/workspace-defaults";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -31,6 +32,7 @@ export async function GET(request: Request) {
       user = await client.query("INSERT INTO users(workspace_id,email,name,role) VALUES($1,$2,$3,'OWNER') RETURNING id,workspace_id", [workspace.rows[0].id, email, userInfo.data.name]);
     }
     const current = user.rows[0];
+    await ensureWorkspaceDefaults(client, current.workspace_id);
     await client.query(
       `INSERT INTO google_connections(workspace_id,google_email,encrypted_access_token,encrypted_refresh_token,token_expiry,scopes)
        VALUES($1,$2,$3,$4,$5,$6)

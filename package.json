@@ -9,6 +9,7 @@
     "worker": "tsx --env-file=.env.local worker/index.ts",
     "db:migrate": "node --env-file=.env.local scripts/migrate.mjs",
     "db:check": "node --env-file=.env.local scripts/check-database.mjs",
+    "db:seed-defaults": "tsx --env-file=.env.local scripts/seed-default-templates.ts",
     "oauth:configure": "node scripts/configure-google-oauth.mjs",
     "typecheck": "tsc --noEmit"
   },
