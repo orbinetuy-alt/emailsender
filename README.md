@@ -6,7 +6,7 @@ Aplicación propia para administrar contactos, plantillas, campañas y envíos g
 
 - Next.js + TypeScript para interfaz y API.
 - PostgreSQL como fuente de verdad.
-- OAuth 2.0 de Google para acceso y autorización de Gmail.
+- OAuth 2.0 de Google para enviar y detectar respuestas mediante metadatos de Gmail.
 - Worker Node separado con bloqueo `FOR UPDATE SKIP LOCKED`.
 - Tokens de Google cifrados con AES-256-GCM.
 - Claves de idempotencia y restricciones únicas para impedir duplicados.
@@ -54,7 +54,7 @@ Para configurar de forma segura un JSON descargado de Google sin imprimir el sec
 npm run oauth:configure -- /ruta/al/client_secret.json
 ```
 
-La aplicación solicita identidad básica y `gmail.send`. El administrador de Workspace puede requerir aprobar la aplicación.
+La aplicación solicita identidad básica, `gmail.send` y `gmail.metadata`. El último permite detectar respuestas mediante identificadores y encabezados sin descargar ni almacenar el cuerpo del correo. Google clasifica los permisos de lectura de Gmail como restringidos, por lo que un despliegue para terceros puede requerir verificación OAuth y requisitos adicionales.
 
 Generar secretos:
 

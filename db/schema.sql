@@ -100,6 +100,11 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   rendered_subject text,
   rendered_body text,
   gmail_message_id text,
+  gmail_thread_id text,
+  reply_message_id text,
+  reply_from text,
+  reply_detected_at timestamptz,
+  last_reply_checked_at timestamptz,
   error_message text,
   locked_by text,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -108,6 +113,14 @@ CREATE TABLE IF NOT EXISTS email_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS email_jobs_due_idx ON email_jobs(status, scheduled_at);
+
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS gmail_thread_id text;
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS reply_message_id text;
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS reply_from text;
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS reply_detected_at timestamptz;
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS last_reply_checked_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS email_jobs_reply_check_idx ON email_jobs(status, last_reply_checked_at, sent_at);
 
 CREATE TABLE IF NOT EXISTS audit_logs (
   id bigserial PRIMARY KEY,

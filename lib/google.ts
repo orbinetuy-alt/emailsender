@@ -5,6 +5,7 @@ export const GOOGLE_SCOPES = [
   "email",
   "profile",
   "https://www.googleapis.com/auth/gmail.send",
+  "https://www.googleapis.com/auth/gmail.metadata",
 ];
 
 export function googleOAuthClient() {
@@ -61,8 +62,40 @@ export async function sendGmailMessage(input: {
     userId: "me",
     requestBody: { raw: Buffer.from(raw).toString("base64url") },
   });
-  if (!response.data.id) throw new Error("Gmail no devolvió un identificador de mensaje.");
-  return response.data.id;
+  if (!response.data.id || !response.data.threadId) {
+    throw new Error("Gmail no devolvió los identificadores del mensaje y del hilo.");
+  }
+  return { messageId: response.data.id, threadId: response.data.threadId };
+}
+
+export async function findReplyInThread(input: {
+  accessToken?: string;
+  refreshToken: string;
+  threadId: string;
+  sentMessageId: string;
+  accountEmail: string;
+  sentAt: Date;
+}) {
+  const auth = googleOAuthClient();
+  auth.setCredentials({ access_token: input.accessToken, refresh_token: input.refreshToken });
+  const gmail = google.gmail({ version: "v1", auth });
+  const response = await gmail.users.threads.get({
+    userId: "me",
+    id: input.threadId,
+    format: "metadata",
+    metadataHeaders: ["From", "Date", "In-Reply-To", "References"],
+  });
+  const messages = response.data.messages || [];
+  for (const message of messages) {
+    if (!message.id || message.id === input.sentMessageId) continue;
+    const timestamp = Number(message.internalDate || 0);
+    if (timestamp && timestamp <= input.sentAt.getTime()) continue;
+    const headers = new Map((message.payload?.headers || []).map((header) => [header.name?.toLowerCase(), header.value || ""]));
+    const from = headers.get("from") || "";
+    if (from.toLowerCase().includes(input.accountEmail.toLowerCase())) continue;
+    return { messageId: message.id, from, receivedAt: timestamp ? new Date(timestamp) : new Date() };
+  }
+  return null;
 }
 
 export function renderMessage(template: string, values: Record<string, unknown>) {
