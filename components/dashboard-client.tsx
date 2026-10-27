@@ -42,11 +42,17 @@ export default function DashboardClient() {
   const [editor, setEditor] = useState<Template | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
+  const [authRequired, setAuthRequired] = useState(false);
 
   async function load() {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
     const body = await response.json();
+    if (response.status === 401) {
+      setAuthRequired(true);
+      return;
+    }
     if (!response.ok) throw new Error(body.error || "No se pudo cargar el panel.");
+    setAuthRequired(false);
     setData(body);
     if (!activeTemplate && body.templates[0]) setActiveTemplate(body.templates[0].id);
   }
@@ -104,6 +110,7 @@ export default function DashboardClient() {
     finally { setBusy(false); }
   }
 
+  if (authRequired) return <div className="auth-page"><div className="auth-card"><div className="auth-brand">R</div><p className="eyebrow">RELAY WORKSPACE</p><h1>Tu comunicación comercial, en orden.</h1><p>Conectá la cuenta autorizada de Google para administrar campañas, enviar mensajes y detectar respuestas.</p><a className="google-button" href="/api/google/connect"><span>G</span>Continuar con Google</a><small>Solicitaremos permiso para enviar correos y consultar únicamente sus metadatos.</small></div></div>;
   if (!data) return <div className="loading"><div className="loading-mark">R</div><p>{toast || "Preparando tu espacio…"}</p></div>;
 
   const nav = [
