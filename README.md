@@ -48,6 +48,12 @@ En Google Cloud Console:
 5. Registrar `https://TU_DOMINIO/api/google/callback` como URI de redirección.
 6. Cargar `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` y `GOOGLE_ALLOWED_EMAIL`.
 
+Para configurar de forma segura un JSON descargado de Google sin imprimir el secreto:
+
+```bash
+npm run oauth:configure -- /ruta/al/client_secret.json
+```
+
 La aplicación solicita identidad básica y `gmail.send`. El administrador de Workspace puede requerir aprobar la aplicación.
 
 Generar secretos:
