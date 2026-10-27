@@ -1,0 +1,321 @@
+{
+  "name": "Envios Workspace - Cola cada 5 minutos",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4ebd924f-3c50-4c38-9240-8a52f4d2cb87",
+      "name": "Probar manualmente",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-1040, 160]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "46df7518-84bd-4359-8bd7-21106e9d159a",
+      "name": "Cada 5 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [-1040, -40]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f8a9c3f7-c71f-4ab3-89e1-92ad39b5d86a",
+              "name": "spreadsheetId",
+              "value": "PEGAR_ID_DE_GOOGLE_SHEET",
+              "type": "string"
+            },
+            {
+              "id": "e5cb9b1a-18ea-4e2d-889b-222ea199e5ed",
+              "name": "clientesSheet",
+              "value": "Clientes",
+              "type": "string"
+            },
+            {
+              "id": "394e0da4-82fd-4ed7-9271-a46e178eb225",
+              "name": "plantillasSheet",
+              "value": "TiposMensaje",
+              "type": "string"
+            },
+            {
+              "id": "b8a642c4-a1a0-4405-96a8-398a622ef29d",
+              "name": "nombreRemitente",
+              "value": "Nombre de la empresa",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "93876e27-21fc-48ed-a80f-bc66d29b573c",
+      "name": "Configuracion",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [-800, 60],
+      "notesInFlow": true,
+      "notes": "Editar solamente este nodo: pegar el ID de la Google Sheet y definir el nombre visible del remitente."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.clientesSheet }}",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "estado",
+              "lookupValue": "EN_COLA"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "80ccad76-743d-492a-9217-0e87873d046d",
+      "name": "Buscar clientes EN_COLA",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [-560, 60],
+      "notesInFlow": true,
+      "notes": "Seleccionar la credencial Google Sheets de la clienta. Lee solamente filas con estado EN_COLA."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all()\n  .filter(item => String(item.json.estado || '').trim().toUpperCase() === 'EN_COLA')\n  .sort((a, b) => Number(a.json.row_number || 0) - Number(b.json.row_number || 0));\n\nif (rows.length === 0) return [];\n\nconst client = rows[0].json;\nif (!client.id) throw new Error('La fila seleccionada no tiene id.');\nif (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(String(client.email || '').trim())) {\n  throw new Error(`Email invalido para el cliente ${client.id}.`);\n}\nif (!client.tipo_mensaje) throw new Error(`El cliente ${client.id} no tiene tipo_mensaje.`);\n\nreturn [{ json: client }];"
+      },
+      "id": "4df153ba-c512-42cd-ae67-d1bd07264ac2",
+      "name": "Seleccionar un cliente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-320, 60],
+      "notesInFlow": true,
+      "notes": "Aunque Sheets devolviera varias filas, este nodo deja pasar solamente una."
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.plantillasSheet }}",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "codigo",
+              "lookupValue": "={{ $('Seleccionar un cliente').first().json.tipo_mensaje }}"
+            },
+            {
+              "lookupColumn": "activo",
+              "lookupValue": "SI"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cbf15104-28e9-4f86-9bd7-ddc439123dea",
+      "name": "Buscar plantilla activa",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [-80, 60],
+      "alwaysOutputData": true,
+      "notesInFlow": true,
+      "notes": "Usar la misma credencial de Google Sheets. Busca la plantilla cuyo codigo coincide con tipo_mensaje."
+    },
+    {
+      "parameters": {
+        "jsCode": "const client = $('Seleccionar un cliente').first().json;\nconst template = $input.first().json;\n\nif (!template.codigo || !template.asunto || !template.mensaje) {\n  throw new Error(`No existe una plantilla activa y completa para ${client.tipo_mensaje}.`);\n}\n\nfunction render(text, data) {\n  return String(text || '').replace(/{{\\s*([a-zA-Z0-9_áéíóúÁÉÍÓÚñÑ-]+)\\s*}}/g, (_, key) => {\n    const field = Object.keys(data).find(k => k.toLowerCase() === key.toLowerCase());\n    return field ? String(data[field] ?? '') : '';\n  });\n}\n\nreturn [{\n  json: {\n    ...client,\n    email: String(client.email).trim(),\n    asunto_renderizado: render(template.asunto, client),\n    mensaje_renderizado: render(template.mensaje, client),\n    siguiente_intento: Number(client.intentos || 0) + 1\n  }\n}];"
+      },
+      "id": "c455e6b5-babe-4cc9-ad1d-49dfc325ed37",
+      "name": "Preparar envio",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 60]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.clientesSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $('Preparar envio').first().json.id }}",
+            "estado": "ENVIANDO",
+            "intentos": "={{ $('Preparar envio').first().json.siguiente_intento }}",
+            "actualizado": "={{ $now.setZone('America/Montevideo').toISO() }}",
+            "ultimo_error": ""
+          },
+          "matchingColumns": ["id"],
+          "schema": [
+            {"id":"id","displayName":"id","required":false,"defaultMatch":true,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"estado","displayName":"estado","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"intentos","displayName":"intentos","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"actualizado","displayName":"actualizado","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"ultimo_error","displayName":"ultimo_error","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false}
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "bdd6fc5c-c814-4c7c-992f-eb1ed26990f8",
+      "name": "Marcar ENVIANDO",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [400, 60],
+      "notesInFlow": true,
+      "notes": "Marca la fila antes de Gmail. Si la ejecución se corta, no se volverá a enviar automáticamente."
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Preparar envio').first().json.email }}",
+        "subject": "={{ $('Preparar envio').first().json.asunto_renderizado }}",
+        "emailType": "text",
+        "message": "={{ $('Preparar envio').first().json.mensaje_renderizado }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "={{ $('Configuracion').first().json.nombreRemitente }}"
+        }
+      },
+      "id": "2e09bb8a-400f-453d-b0da-322e25af6ef9",
+      "name": "Enviar con Gmail",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [640, 60],
+      "onError": "continueRegularOutput",
+      "notesInFlow": true,
+      "notes": "Seleccionar la credencial Gmail de la clienta. La atribución de n8n está desactivada."
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.spreadsheetId }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Configuracion').first().json.clientesSheet }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $('Preparar envio').first().json.id }}",
+            "estado": "={{ $json.error ? 'ERROR' : 'ENVIADO' }}",
+            "fecha_envio": "={{ $json.error ? '' : $now.setZone('America/Montevideo').toISO() }}",
+            "actualizado": "={{ $now.setZone('America/Montevideo').toISO() }}",
+            "ultimo_error": "={{ $json.error ? String($json.error.message || $json.error).slice(0, 500) : '' }}",
+            "message_id": "={{ $json.id || $json.messageId || '' }}"
+          },
+          "matchingColumns": ["id"],
+          "schema": [
+            {"id":"id","displayName":"id","required":false,"defaultMatch":true,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"estado","displayName":"estado","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"fecha_envio","displayName":"fecha_envio","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"actualizado","displayName":"actualizado","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"ultimo_error","displayName":"ultimo_error","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false},
+            {"id":"message_id","displayName":"message_id","required":false,"defaultMatch":false,"display":true,"type":"string","canBeUsedToMatch":true,"removed":false}
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e8e93c34-ea85-4565-8e3f-9e9e128a6ed1",
+      "name": "Guardar resultado",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [880, 60],
+      "notesInFlow": true,
+      "notes": "Actualiza ENVIADO o ERROR. Guarda fecha, error y el identificador devuelto por Gmail."
+    },
+    {
+      "parameters": {
+        "content": "## Antes de publicar\n1. Importá los CSV de ejemplo en una Google Sheet.\n2. Editá el nodo **Configuracion** y pegá el ID de la planilla.\n3. Elegí la misma credencial en los tres nodos de Google Sheets.\n4. Elegí la credencial de Gmail.\n5. Dejá un único contacto de prueba con estado `EN_COLA`.\n6. Ejecutá con **Probar manualmente**.\n7. Recién después publicá el workflow.\n\nEl workflow procesa como máximo **un contacto por ejecución**.",
+        "height": 420,
+        "width": 430,
+        "color": 5
+      },
+      "id": "a439225b-0f8d-4930-8a94-780b1c0130e2",
+      "name": "Instrucciones",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-1040, -500]
+    }
+  ],
+  "connections": {
+    "Probar manualmente": {
+      "main": [[{"node":"Configuracion","type":"main","index":0}]]
+    },
+    "Cada 5 minutos": {
+      "main": [[{"node":"Configuracion","type":"main","index":0}]]
+    },
+    "Configuracion": {
+      "main": [[{"node":"Buscar clientes EN_COLA","type":"main","index":0}]]
+    },
+    "Buscar clientes EN_COLA": {
+      "main": [[{"node":"Seleccionar un cliente","type":"main","index":0}]]
+    },
+    "Seleccionar un cliente": {
+      "main": [[{"node":"Buscar plantilla activa","type":"main","index":0}]]
+    },
+    "Buscar plantilla activa": {
+      "main": [[{"node":"Preparar envio","type":"main","index":0}]]
+    },
+    "Preparar envio": {
+      "main": [[{"node":"Marcar ENVIANDO","type":"main","index":0}]]
+    },
+    "Marcar ENVIANDO": {
+      "main": [[{"node":"Enviar con Gmail","type":"main","index":0}]]
+    },
+    "Enviar con Gmail": {
+      "main": [[{"node":"Guardar resultado","type":"main","index":0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Montevideo",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "active": false,
+  "versionId": "969a06fa-315d-4b4f-9374-688fa8fe1d8d",
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -1,0 +1,2 @@
+id,nombre,empresa,email,tipo_mensaje,estado,fecha_envio,ultimo_error,intentos,actualizado,message_id
+CLIENTE-PRUEBA,Ana,Empresa de prueba,REEMPLAZAR_POR_TU_EMAIL,TIPO_1,BORRADOR,,,0,,

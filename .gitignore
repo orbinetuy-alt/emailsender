@@ -1,0 +1,9 @@
+.clasp.json
+.sites-runtime/
+.DS_Store
+node_modules/
+.next/
+.env
+.env.local
+*.log
+*.tsbuildinfo

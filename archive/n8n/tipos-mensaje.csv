@@ -1,0 +1,16 @@
+codigo,nombre,asunto,mensaje,activo
+TIPO_1,Tipo de empresa 1,Una propuesta para {{empresa}},"Hola {{nombre}},
+
+Quería contactarte para contarte cómo podemos ayudar a {{empresa}}.
+
+Saludos,",SI
+TIPO_2,Tipo de empresa 2,Servicios para {{empresa}},"Hola {{nombre}},
+
+Tenemos una propuesta pensada para empresas como {{empresa}}. ¿Te gustaría que coordinemos una breve conversación?
+
+Saludos,",SI
+TIPO_3,Tipo de empresa 3,¿Conversamos {{nombre}}?,"Hola {{nombre}},
+
+Creemos que nuestro servicio puede ser relevante para {{empresa}}.
+
+Quedo atenta,",SI

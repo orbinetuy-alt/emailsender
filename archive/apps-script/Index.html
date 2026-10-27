@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    :root {
+      --ink: #182033;
+      --muted: #697386;
+      --line: #e4e8ef;
+      --paper: #ffffff;
+      --ground: #f5f7fb;
+      --primary: #3468d4;
+      --primary-dark: #204b9f;
+      --success: #167c59;
+      --warning: #a86206;
+      --danger: #b53939;
+      --shadow: 0 18px 50px rgba(31, 45, 78, .10);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--ground); color: var(--ink); font: 14px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input, textarea, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { min-height: 100vh; }
+    .topbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 18px; min-height: 72px; padding: 0 28px; color: #fff; background: #172033; box-shadow: 0 6px 24px rgba(18, 26, 45, .18); }
+    .brand { display: flex; align-items: center; gap: 12px; min-width: 230px; }
+    .mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: linear-gradient(145deg, #5e8efa, #2f60c6); font-size: 20px; }
+    .brand strong { display: block; font-size: 15px; letter-spacing: .01em; }
+    .brand span { color: #b8c2d9; font-size: 12px; }
+    .nav { display: flex; align-self: stretch; gap: 4px; }
+    .nav button { border: 0; border-bottom: 3px solid transparent; padding: 0 14px; color: #b8c2d9; background: transparent; }
+    .nav button.active { color: #fff; border-bottom-color: #6e96f4; }
+    .spacer { flex: 1; }
+    .system-status { display: flex; align-items: center; gap: 9px; padding: 8px 12px; border: 1px solid rgba(255,255,255,.15); border-radius: 999px; font-size: 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #9ba6b9; }
+    .dot.on { background: #4ad09a; box-shadow: 0 0 0 4px rgba(74,208,154,.12); }
+    main { max-width: 1480px; margin: 0 auto; padding: 28px; }
+    .view { display: none; }
+    .view.active { display: block; }
+    .hero { display: flex; align-items: end; justify-content: space-between; gap: 24px; margin-bottom: 22px; }
+    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -.03em; }
+    h2 { margin: 0; font-size: 18px; }
+    h3 { margin: 0; font-size: 15px; }
+    p { margin: 0; }
+    .muted { color: var(--muted); }
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; }
+    .btn { border: 1px solid var(--line); border-radius: 10px; padding: 9px 13px; color: var(--ink); background: #fff; font-weight: 650; }
+    .btn:hover { border-color: #b9c4d8; }
+    .btn.primary { color: #fff; border-color: var(--primary); background: var(--primary); }
+    .btn.primary:hover { background: var(--primary-dark); }
+    .btn.danger { color: var(--danger); }
+    .btn:disabled { opacity: .5; cursor: wait; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 20px; }
+    .stat { padding: 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); box-shadow: 0 6px 20px rgba(30, 50, 90, .04); }
+    .stat .label { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+    .stat .value { margin-top: 6px; font-size: 27px; font-weight: 750; }
+    .stat .sub { color: var(--muted); font-size: 12px; }
+    .panel { border: 1px solid var(--line); border-radius: 16px; background: var(--paper); box-shadow: var(--shadow); overflow: hidden; }
+    .panel-head { display: flex; align-items: center; gap: 12px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
+    .panel-head .search { flex: 1; max-width: 360px; }
+    input, textarea, select { width: 100%; border: 1px solid #cfd6e2; border-radius: 9px; padding: 9px 11px; color: var(--ink); background: #fff; outline: none; }
+    input:focus, textarea:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(52,104,212,.11); }
+    textarea { min-height: 220px; resize: vertical; line-height: 1.55; }
+    table { width: 100%; border-collapse: collapse; }
+    th { position: sticky; top: 72px; z-index: 2; padding: 11px 12px; text-align: left; color: var(--muted); background: #f8f9fc; border-bottom: 1px solid var(--line); font-size: 11px; text-transform: uppercase; letter-spacing: .055em; }
+    td { padding: 12px; border-bottom: 1px solid #edf0f4; vertical-align: middle; }
+    tr:hover td { background: #fbfcfe; }
+    .checkbox { width: 16px; height: 16px; }
+    .contact strong { display: block; }
+    .contact span { color: var(--muted); font-size: 12px; }
+    .badge { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border-radius: 999px; background: #edf1f7; color: #4f5b70; font-size: 11px; font-weight: 750; }
+    .badge.ENVIADO { color: #116447; background: #ddf5eb; }
+    .badge.EN_COLA { color: #2855ad; background: #e4edff; }
+    .badge.ERROR { color: #a33131; background: #fde7e7; }
+    .badge.NO_CONTACTAR { color: #6a5260; background: #eee8eb; }
+    .badge.PAUSADO { color: #88540b; background: #fff1d8; }
+    .empty { padding: 52px 20px; text-align: center; color: var(--muted); }
+    .template-grid { display: grid; grid-template-columns: 310px minmax(0, 1fr); gap: 18px; }
+    .template-list { padding: 8px; }
+    .template-item { width: 100%; border: 0; border-radius: 10px; padding: 13px; text-align: left; color: var(--ink); background: transparent; }
+    .template-item:hover, .template-item.active { background: #edf3ff; }
+    .template-item small { display: block; margin-top: 3px; color: var(--muted); }
+    .editor { padding: 22px; }
+    .form-grid { display: grid; grid-template-columns: 180px 1fr; gap: 14px; }
+    label { display: grid; gap: 6px; color: #3f4a5d; font-size: 12px; font-weight: 700; }
+    .wide { grid-column: 1 / -1; }
+    .helper { margin-top: 12px; padding: 12px 14px; border-radius: 10px; color: #4e5b72; background: #f2f5fa; font-size: 12px; }
+    .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .7fr); gap: 18px; }
+    .settings-card { padding: 22px; }
+    .stack { display: grid; gap: 15px; }
+    .switch-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px; border: 1px solid var(--line); border-radius: 12px; }
+    .switch { position: relative; width: 48px; height: 27px; flex: 0 0 auto; }
+    .switch input { position: absolute; opacity: 0; }
+    .slider { position: absolute; inset: 0; border-radius: 999px; background: #b4bdcc; transition: .2s; }
+    .slider::after { content: ''; position: absolute; width: 21px; height: 21px; left: 3px; top: 3px; border-radius: 50%; background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,.2); transition: .2s; }
+    .switch input:checked + .slider { background: var(--success); }
+    .switch input:checked + .slider::after { transform: translateX(21px); }
+    .activity { display: grid; gap: 0; }
+    .activity-item { display: grid; grid-template-columns: 145px 130px 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+    .toast { position: fixed; right: 24px; bottom: 24px; z-index: 20; max-width: 420px; padding: 13px 16px; border-radius: 11px; color: #fff; background: #26334b; box-shadow: var(--shadow); transform: translateY(120px); opacity: 0; transition: .25s; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.error { background: #9d3232; }
+    .modal { position: fixed; inset: 0; z-index: 15; display: none; place-items: center; padding: 20px; background: rgba(15, 23, 40, .55); }
+    .modal.open { display: grid; }
+    .modal-card { width: min(680px, 100%); max-height: 85vh; overflow: auto; border-radius: 16px; background: #fff; box-shadow: 0 30px 90px rgba(0,0,0,.3); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; border-bottom: 1px solid var(--line); }
+    .modal-body { padding: 20px; }
+    .preview-body { margin-top: 18px; padding: 18px; white-space: pre-wrap; border-radius: 10px; background: #f7f8fb; }
+    @media (max-width: 900px) {
+      .topbar { padding: 0 14px; flex-wrap: wrap; }
+      .brand { min-width: 180px; }
+      .nav { order: 3; width: 100%; height: 42px; overflow-x: auto; }
+      main { padding: 20px 14px; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+      .template-grid, .settings-grid { grid-template-columns: 1fr; }
+      .table-wrap { overflow-x: auto; }
+      th { top: 114px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand"><div class="mark">✉</div><div><strong>Envíos Workspace</strong><span>Comunicación comercial</span></div></div>
+      <nav class="nav">
+        <button class="active" data-view="clients">Clientes</button>
+        <button data-view="templates">Tipos de mensajes</button>
+        <button data-view="activity">Actividad</button>
+        <button data-view="settings">Configuración</button>
+      </nav>
+      <div class="spacer"></div>
+      <div class="system-status"><span id="statusDot" class="dot"></span><span id="statusText">Cargando…</span></div>
+    </header>
+
+    <main>
+      <section id="clients" class="view active">
+        <div class="hero"><div><h1>Clientes</h1><p class="muted">Controlá quién está pendiente, en cola o ya fue contactado.</p></div><div class="actions"><button class="btn" onclick="normalizeClients()">Sincronizar filas</button><button class="btn" onclick="pauseSelected()">Pausar</button><button class="btn primary" onclick="queueSelected()">Agregar a la cola</button></div></div>
+        <div class="stats">
+          <div class="stat"><div class="label">Total</div><div id="totalCount" class="value">—</div><div class="sub">contactos cargados</div></div>
+          <div class="stat"><div class="label">En cola</div><div id="queuedCount" class="value">—</div><div class="sub">un correo por ejecución</div></div>
+          <div class="stat"><div class="label">Enviados</div><div id="sentCount" class="value">—</div><div class="sub">confirmados por Gmail</div></div>
+          <div class="stat"><div class="label">Errores</div><div id="errorCount" class="value">—</div><div class="sub">requieren revisión</div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><input id="search" class="search" type="search" placeholder="Buscar por nombre, empresa o email…"><select id="stateFilter" style="max-width:180px"><option value="">Todos los estados</option></select><span id="selectionCount" class="muted">0 seleccionados</span></div>
+          <div class="table-wrap"><table><thead><tr><th><input id="selectAll" class="checkbox" type="checkbox"></th><th>Contacto</th><th>Empresa</th><th>Tipo</th><th>Estado</th><th>Última actualización</th><th></th></tr></thead><tbody id="clientRows"></tbody></table></div>
+        </div>
+      </section>
+
+      <section id="templates" class="view">
+        <div class="hero"><div><h1>Tipos de mensajes</h1><p class="muted">Definí el contenido que corresponde a cada clase de empresa.</p></div><button class="btn" onclick="newTemplate()">Nuevo tipo</button></div>
+        <div class="template-grid">
+          <div class="panel"><div class="panel-head"><h3>Plantillas</h3></div><div id="templateList" class="template-list"></div></div>
+          <div class="panel editor">
+            <form id="templateForm" class="form-grid">
+              <label>Código<input id="tplCode" required maxlength="60" placeholder="TIPO_1"></label>
+              <label>Nombre<input id="tplName" required maxlength="120" placeholder="Empresas de servicios"></label>
+              <label class="wide">Asunto<input id="tplSubject" required maxlength="250" placeholder="Una propuesta para {{empresa}}"></label>
+              <label class="wide">Mensaje<textarea id="tplBody" required placeholder="Hola {{nombre}}, …"></textarea></label>
+              <label style="display:flex;align-items:center;grid-template-columns:auto 1fr"><input id="tplActive" class="checkbox" type="checkbox" checked> Plantilla activa</label>
+              <div class="actions" style="justify-content:flex-end"><button class="btn primary" type="submit">Guardar plantilla</button></div>
+            </form>
+            <div class="helper">Variables disponibles: <strong>{{nombre}}</strong>, <strong>{{empresa}}</strong>, <strong>{{email}}</strong>, <strong>{{tipo_mensaje}}</strong> y cualquier columna adicional de Clientes.</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="activity" class="view">
+        <div class="hero"><div><h1>Actividad</h1><p class="muted">Registro reciente de envíos, cambios y errores.</p></div><button class="btn" onclick="loadData()">Actualizar</button></div>
+        <div class="panel settings-card"><div id="activityList" class="activity"></div></div>
+      </section>
+
+      <section id="settings" class="view">
+        <div class="hero"><div><h1>Configuración</h1><p class="muted">Permisos, remitente y control maestro de la automatización.</p></div></div>
+        <div class="settings-grid">
+          <div class="panel settings-card stack">
+            <h2>Remitente</h2>
+            <label>Nombre visible<input id="senderName" placeholder="Nombre o empresa"></label>
+            <label>Responder a (opcional)<input id="replyTo" type="email" placeholder="contacto@empresa.com"></label>
+            <button class="btn primary" onclick="saveSettings()">Guardar configuración</button>
+          </div>
+          <div class="panel settings-card stack">
+            <h2>Automatización</h2>
+            <div class="switch-row"><div><strong>Envíos habilitados</strong><p class="muted">Procesa como máximo un correo cada ~5 minutos.</p></div><label class="switch"><input id="enabledToggle" type="checkbox"><span class="slider"></span></label></div>
+            <div><span class="muted">Cuenta efectiva</span><br><strong id="effectiveUser">—</strong></div>
+            <div><span class="muted">Cuota restante informada por Google</span><br><strong id="quota">—</strong></div>
+            <div><span class="muted">Última ejecución</span><br><strong id="lastRun">—</strong></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="previewModal" class="modal" onclick="event.target === this && closePreview()"><div class="modal-card"><div class="modal-head"><h2>Vista previa</h2><button class="btn" onclick="closePreview()">Cerrar</button></div><div class="modal-body"><div><span class="muted">Para</span><br><strong id="previewTo"></strong></div><div style="margin-top:12px"><span class="muted">Asunto</span><br><strong id="previewSubject"></strong></div><div id="previewBody" class="preview-body"></div></div></div></div>
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const state = { data: null, selected: new Set(), activeTemplate: null };
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+    document.addEventListener('DOMContentLoaded', () => {
+      $$('.nav button').forEach((button) => button.addEventListener('click', () => switchView(button.dataset.view)));
+      $('#search').addEventListener('input', renderClients);
+      $('#stateFilter').addEventListener('change', renderClients);
+      $('#selectAll').addEventListener('change', toggleAllVisible);
+      $('#templateForm').addEventListener('submit', submitTemplate);
+      $('#enabledToggle').addEventListener('change', toggleSending);
+      loadData();
+    });
+
+    function callServer(name, ...args) {
+      return new Promise((resolve, reject) => {
+        google.script.run.withSuccessHandler(resolve).withFailureHandler((error) => reject(new Error(error.message || error)))[name](...args);
+      });
+    }
+
+    async function loadData() {
+      setBusy(true);
+      try { state.data = await callServer('getDashboardData'); renderAll(); }
+      catch (error) { showToast(error.message, true); }
+      finally { setBusy(false); }
+    }
+
+    function renderAll() {
+      const { clients, counts, config } = state.data;
+      $('#totalCount').textContent = clients.length;
+      $('#queuedCount').textContent = counts.EN_COLA || 0;
+      $('#sentCount').textContent = counts.ENVIADO || 0;
+      $('#errorCount').textContent = counts.ERROR || 0;
+      $('#statusDot').classList.toggle('on', config.enabled);
+      $('#statusText').textContent = config.enabled ? 'Automatización activa' : 'Envíos deshabilitados';
+      $('#enabledToggle').checked = config.enabled;
+      $('#senderName').value = config.senderName || '';
+      $('#replyTo').value = config.replyTo || '';
+      $('#effectiveUser').textContent = config.effectiveUser || 'No disponible';
+      $('#quota').textContent = `${config.remainingQuota} destinatarios`;
+      $('#lastRun').textContent = formatDate(config.lastRun);
+      renderStateFilter(); renderClients(); renderTemplates(); renderActivity();
+    }
+
+    function switchView(id) {
+      $$('.view').forEach((view) => view.classList.toggle('active', view.id === id));
+      $$('.nav button').forEach((button) => button.classList.toggle('active', button.dataset.view === id));
+    }
+
+    function renderStateFilter() {
+      const select = $('#stateFilter');
+      const current = select.value;
+      const states = [...new Set(state.data.clients.map((client) => client.estado || 'BORRADOR'))].sort();
+      select.innerHTML = '<option value="">Todos los estados</option>' + states.map((value) => `<option>${escapeHtml(value)}</option>`).join('');
+      select.value = current;
+    }
+
+    function filteredClients() {
+      const query = $('#search').value.trim().toLowerCase();
+      const status = $('#stateFilter').value;
+      return state.data.clients.filter((client) => {
+        const haystack = `${client.nombre || ''} ${client.empresa || ''} ${client.email || ''}`.toLowerCase();
+        return (!query || haystack.includes(query)) && (!status || (client.estado || 'BORRADOR') === status);
+      });
+    }
+
+    function renderClients() {
+      const clients = filteredClients();
+      $('#clientRows').innerHTML = clients.length ? clients.map((client) => `
+        <tr>
+          <td><input class="checkbox client-check" type="checkbox" data-id="${escapeAttr(client.id)}" ${state.selected.has(String(client.id)) ? 'checked' : ''}></td>
+          <td class="contact"><strong>${escapeHtml(client.nombre || 'Sin nombre')}</strong><span>${escapeHtml(client.email || 'Sin email')}</span></td>
+          <td>${escapeHtml(client.empresa || '—')}</td>
+          <td>${escapeHtml(client.tipo_mensaje || '—')}</td>
+          <td><span class="badge ${escapeAttr(client.estado || 'BORRADOR')}">${escapeHtml(client.estado || 'BORRADOR')}</span>${client.ultimo_error ? `<div style="color:#b53939;font-size:11px;margin-top:4px">${escapeHtml(client.ultimo_error)}</div>` : ''}</td>
+          <td>${formatDate(client.actualizado || client.fecha_envio)}</td>
+          <td><button class="btn" onclick="preview('${escapeJs(client.id)}')">Vista previa</button></td>
+        </tr>`).join('') : '<tr><td colspan="7" class="empty">No hay clientes que coincidan.</td></tr>';
+      $$('.client-check').forEach((checkbox) => checkbox.addEventListener('change', () => {
+        checkbox.checked ? state.selected.add(checkbox.dataset.id) : state.selected.delete(checkbox.dataset.id);
+        updateSelection();
+      }));
+      updateSelection();
+    }
+
+    function toggleAllVisible(event) {
+      filteredClients().forEach((client) => event.target.checked ? state.selected.add(String(client.id)) : state.selected.delete(String(client.id)));
+      renderClients();
+    }
+
+    function updateSelection() { $('#selectionCount').textContent = `${state.selected.size} seleccionados`; }
+
+    async function normalizeClients() { await runAction('normalizarClientes', [], (result) => { state.data = result; state.selected.clear(); renderAll(); }, 'Filas sincronizadas.'); }
+    async function queueSelected() {
+      if (!state.selected.size) return showToast('Seleccioná al menos un cliente.', true);
+      await runAction('queueClients', [[...state.selected]], (result) => {
+        state.data = result.dashboard; state.selected.clear(); renderAll();
+        showToast(`${result.queued} cliente(s) agregados. ${result.errors.length ? result.errors.length + ' con error.' : ''}`, !!result.errors.length);
+      });
+    }
+    async function pauseSelected() {
+      if (!state.selected.size) return showToast('Seleccioná al menos un cliente.', true);
+      await runAction('pauseClients', [[...state.selected]], (result) => { state.data = result; state.selected.clear(); renderAll(); }, 'Clientes pausados.');
+    }
+
+    async function preview(id) {
+      setBusy(true);
+      try {
+        const result = await callServer('previewClient', id);
+        $('#previewTo').textContent = result.to; $('#previewSubject').textContent = result.subject; $('#previewBody').textContent = result.body;
+        $('#previewModal').classList.add('open');
+      } catch (error) { showToast(error.message, true); }
+      finally { setBusy(false); }
+    }
+    function closePreview() { $('#previewModal').classList.remove('open'); }
+
+    function renderTemplates() {
+      const templates = state.data.templates;
+      if (!state.activeTemplate && templates.length) state.activeTemplate = templates[0].codigo;
+      $('#templateList').innerHTML = templates.map((template) => `<button class="template-item ${state.activeTemplate === template.codigo ? 'active' : ''}" onclick="selectTemplate('${escapeJs(template.codigo)}')"><strong>${escapeHtml(template.nombre)}</strong><small>${escapeHtml(template.codigo)} · ${String(template.activo).toUpperCase() === 'NO' ? 'Inactiva' : 'Activa'}</small></button>`).join('') || '<div class="empty">No hay plantillas.</div>';
+      const active = templates.find((template) => template.codigo === state.activeTemplate);
+      if (active) fillTemplate(active);
+    }
+    function selectTemplate(code) { state.activeTemplate = code; renderTemplates(); }
+    function fillTemplate(template) { $('#tplCode').value = template.codigo || ''; $('#tplName').value = template.nombre || ''; $('#tplSubject').value = template.asunto || ''; $('#tplBody').value = template.mensaje || ''; $('#tplActive').checked = String(template.activo).toUpperCase() !== 'NO'; }
+    function newTemplate() { state.activeTemplate = null; fillTemplate({ activo: 'SI' }); $('#tplCode').focus(); $$('.template-item').forEach((item) => item.classList.remove('active')); }
+    async function submitTemplate(event) {
+      event.preventDefault();
+      const payload = { codigo: $('#tplCode').value, nombre: $('#tplName').value, asunto: $('#tplSubject').value, mensaje: $('#tplBody').value, activo: $('#tplActive').checked };
+      await runAction('saveTemplate', [payload], (result) => { state.data = result; state.activeTemplate = payload.codigo.trim().toUpperCase(); renderAll(); }, 'Plantilla guardada.');
+    }
+
+    function renderActivity() {
+      $('#activityList').innerHTML = state.data.activity.length ? state.data.activity.map((item) => `<div class="activity-item"><span class="muted">${formatDate(item.fecha)}</span><strong>${escapeHtml(item.accion || '')}</strong><span>${escapeHtml(item.email || item.detalle || '')}${item.email && item.detalle ? ` · ${escapeHtml(item.detalle)}` : ''}</span></div>`).join('') : '<div class="empty">Todavía no hay actividad.</div>';
+    }
+
+    async function saveSettings() {
+      const payload = { senderName: $('#senderName').value, replyTo: $('#replyTo').value };
+      await runAction('saveSettings', [payload], (result) => { state.data = result; renderAll(); }, 'Configuración guardada.');
+    }
+
+    async function toggleSending(event) {
+      const enabled = event.target.checked;
+      if (enabled && !confirm('Esto habilitará los envíos reales desde la cuenta de Google Workspace. ¿Revisaste la lista y las plantillas?')) { event.target.checked = false; return; }
+      await runAction('setSendingEnabled', [enabled, enabled ? 'HABILITAR' : ''], (result) => { state.data = result; renderAll(); }, enabled ? 'Automatización habilitada.' : 'Envíos deshabilitados.');
+    }
+
+    async function runAction(name, args, onSuccess, successMessage) {
+      setBusy(true);
+      try { const result = await callServer(name, ...args); onSuccess(result); if (successMessage) showToast(successMessage); }
+      catch (error) { showToast(error.message, true); await loadData(); }
+      finally { setBusy(false); }
+    }
+
+    function setBusy(busy) { $$('button').forEach((button) => button.disabled = busy); }
+    function formatDate(value) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat('es-UY', { dateStyle: 'short', timeStyle: 'short' }).format(date); }
+    function escapeHtml(value) { return String(value ?? '').replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char])); }
+    function escapeAttr(value) { return escapeHtml(value); }
+    function escapeJs(value) { return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, ' '); }
+    let toastTimer;
+    function showToast(message, error) { const toast = $('#toast'); toast.textContent = message; toast.classList.toggle('error', !!error); toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 4500); }
+  </script>
+</body>
+</html>
