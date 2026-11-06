@@ -3,10 +3,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireViewer } from "@/lib/auth";
 import { isDemoMode, transaction } from "@/lib/db";
+import { campaignFiltersSchema, contactFilterSql } from "@/lib/campaign-filters";
 
 const schema = z.object({
   name: z.string().min(1).max(160),
-  contactIds: z.array(z.string().uuid()).min(1),
+  templateId: z.string().uuid(),
+  filters: campaignFiltersSchema,
   startAt: z.string().datetime().optional(),
   intervalMinutes: z.number().int().min(1).max(1440).default(5),
 });
@@ -18,25 +20,29 @@ export async function POST(request: Request) {
     const input = schema.parse(await request.json());
     const startAt = input.startAt ? new Date(input.startAt) : new Date();
     const result = await transaction(async (client) => {
+      const template = await client.query<{ id: string; version: number }>(
+        "SELECT id,version FROM message_templates WHERE id=$1 AND workspace_id=$2 AND active=true",
+        [input.templateId, viewer.workspaceId],
+      );
+      if (!template.rows[0]) throw new Error("La plantilla seleccionada no está disponible.");
+      const filtered = contactFilterSql(viewer.workspaceId, input.filters);
+      const contacts = await client.query<{ id: string }>(
+        `SELECT c.id FROM contacts c WHERE ${filtered.where} ORDER BY c.created_at,c.id`,
+        filtered.values,
+      );
+      if (!contacts.rows.length) throw new Error("Los filtros no tienen contactos elegibles.");
       const campaign = await client.query<{ id: string }>(
-        `INSERT INTO campaigns(workspace_id,name,status,start_at,interval_minutes,created_by)
-         VALUES($1,$2,'SCHEDULED',$3,$4,$5) RETURNING id`,
-        [viewer.workspaceId, input.name, startAt, input.intervalMinutes, viewer.userId],
+        `INSERT INTO campaigns(workspace_id,name,status,start_at,interval_minutes,created_by,template_id,filters)
+         VALUES($1,$2,'SCHEDULED',$3,$4,$5,$6,$7) RETURNING id`,
+        [viewer.workspaceId, input.name, startAt, input.intervalMinutes, viewer.userId, input.templateId, JSON.stringify(input.filters)],
       );
       const campaignId = campaign.rows[0].id;
-      const contacts = await client.query<{ id: string; company_type: string; template_id: string; version: number }>(
-        `SELECT c.id,c.company_type,t.id AS template_id,t.version
-         FROM contacts c JOIN message_templates t ON t.workspace_id=c.workspace_id AND t.code=c.company_type AND t.active=true
-         WHERE c.workspace_id=$1 AND c.id=ANY($2::uuid[]) AND c.status IN ('DRAFT','READY','ERROR')`,
-        [viewer.workspaceId, input.contactIds],
-      );
-      if (!contacts.rows.length) throw new Error("No hay contactos elegibles con una plantilla activa.");
       for (const [index, contact] of contacts.rows.entries()) {
         const scheduledAt = new Date(startAt.getTime() + index * input.intervalMinutes * 60_000);
         await client.query(
           `INSERT INTO email_jobs(workspace_id,campaign_id,contact_id,template_id,template_version,scheduled_at,idempotency_key)
            VALUES($1,$2,$3,$4,$5,$6,$7)`,
-          [viewer.workspaceId, campaignId, contact.id, contact.template_id, contact.version, scheduledAt, crypto.createHash("sha256").update(`${campaignId}:${contact.id}`).digest("hex")],
+          [viewer.workspaceId, campaignId, contact.id, template.rows[0].id, template.rows[0].version, scheduledAt, crypto.createHash("sha256").update(`${campaignId}:${contact.id}`).digest("hex")],
         );
         await client.query("UPDATE contacts SET status='QUEUED',updated_at=now() WHERE id=$1", [contact.id]);
       }

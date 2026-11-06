@@ -49,6 +49,15 @@ CREATE TABLE IF NOT EXISTS contacts (
   company_type text NOT NULL,
   status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'READY', 'QUEUED', 'PROCESSING', 'SENT', 'ERROR', 'PAUSED', 'DO_NOT_CONTACT', 'REPLIED')),
   custom_fields jsonb NOT NULL DEFAULT '{}',
+  hub text,
+  network text,
+  job_title text,
+  city text,
+  email_quality text,
+  linkedin_url text,
+  existing_client_office text,
+  source_date date,
+  last_imported_at timestamptz,
   last_contacted_at timestamptz,
   last_error text,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -57,6 +66,18 @@ CREATE TABLE IF NOT EXISTS contacts (
 );
 
 CREATE INDEX IF NOT EXISTS contacts_workspace_status_idx ON contacts(workspace_id, status);
+
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS hub text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS network text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS job_title text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS city text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_quality text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS linkedin_url text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS existing_client_office text;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source_date date;
+ALTER TABLE contacts ADD COLUMN IF NOT EXISTS last_imported_at timestamptz;
+
+CREATE INDEX IF NOT EXISTS contacts_workspace_segments_idx ON contacts(workspace_id, company_type, hub, email_quality);
 
 CREATE TABLE IF NOT EXISTS message_templates (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -79,10 +100,29 @@ CREATE TABLE IF NOT EXISTS campaigns (
   status text NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'SCHEDULED', 'RUNNING', 'PAUSED', 'COMPLETED', 'CANCELLED')),
   start_at timestamptz,
   interval_minutes integer NOT NULL DEFAULT 5 CHECK (interval_minutes BETWEEN 1 AND 1440),
+  template_id uuid REFERENCES message_templates(id) ON DELETE RESTRICT,
+  filters jsonb NOT NULL DEFAULT '{}',
   created_by uuid REFERENCES users(id),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS template_id uuid REFERENCES message_templates(id) ON DELETE RESTRICT;
+ALTER TABLE campaigns ADD COLUMN IF NOT EXISTS filters jsonb NOT NULL DEFAULT '{}';
+
+CREATE TABLE IF NOT EXISTS contact_imports (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  file_name text NOT NULL,
+  total_rows integer NOT NULL DEFAULT 0,
+  created_count integer NOT NULL DEFAULT 0,
+  updated_count integer NOT NULL DEFAULT 0,
+  rejected_count integer NOT NULL DEFAULT 0,
+  uploaded_by uuid REFERENCES users(id),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS contact_imports_workspace_created_idx ON contact_imports(workspace_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS email_jobs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -11,6 +11,11 @@ type Job = {
   email: string;
   name: string;
   company: string;
+  company_type: string;
+  hub: string;
+  network: string;
+  job_title: string;
+  city: string;
   custom_fields: Record<string, unknown>;
   subject: string;
   body_text: string;
@@ -25,7 +30,7 @@ const pollInterval = Number(process.env.WORKER_POLL_INTERVAL_MS || 15000);
 async function claimJob() {
   return transaction(async (client) => {
     const result = await client.query<Job>(
-      `SELECT j.id,j.workspace_id,j.campaign_id,j.contact_id,c.email,c.name,c.company,c.custom_fields,
+      `SELECT j.id,j.workspace_id,j.campaign_id,j.contact_id,c.email,c.name,c.company,c.company_type,c.hub,c.network,c.job_title,c.city,c.custom_fields,
               t.subject,t.body_text,g.encrypted_access_token,g.encrypted_refresh_token,g.google_email
        FROM email_jobs j
        JOIN contacts c ON c.id=j.contact_id
@@ -46,7 +51,7 @@ async function claimJob() {
 }
 
 async function processJob(job: Job) {
-  const values = { nombre: job.name, empresa: job.company, email: job.email, ...job.custom_fields };
+  const values = { nombre: job.name, empresa: job.company, email: job.email, tipo: job.company_type, hub: job.hub, red: job.network, cargo: job.job_title, ciudad: job.city, ...job.custom_fields };
   const subject = renderMessage(job.subject, values);
   const body = renderMessage(job.body_text, values);
   try {

@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-type Contact = { id: string; name: string; company: string; email: string; companyType: string; status: string; updatedAt: string; lastError?: string };
+type Contact = { id: string; name: string; company: string; email: string; companyType: string; hub?: string; network?: string; jobTitle?: string; city?: string; emailQuality?: string; existingClientOffice?: string; status: string; updatedAt: string; lastError?: string };
 type Template = { id: string; code: string; name: string; subject: string; body: string; active: boolean; version: number };
-type Campaign = { id: string; name: string; status: string; total: number; sent: number; errors: number; startAt: string | null };
+type CampaignFilters = { types: string[]; hubs: string[]; companies: string[]; networks: string[]; emailQualities: string[]; excludeExistingClients: boolean };
+type Campaign = { id: string; name: string; status: string; total: number; sent: number; errors: number; startAt: string | null; templateName?: string; filters?: CampaignFilters };
 type Activity = { id: string; action: string; detail: string; createdAt: string };
+type ContactImport = { id: string; fileName: string; total: number; created: number; updated: number; rejected: number; createdAt: string };
 type Dashboard = {
   viewer: { name: string; email: string };
   connected: boolean;
@@ -14,7 +16,15 @@ type Dashboard = {
   templates: Template[];
   campaigns: Campaign[];
   activity: Activity[];
+  imports: ContactImport[];
+  filterOptions: { types: string[]; hubs: string[]; companies: string[]; networks: string[]; emailQualities: string[] };
 };
+
+const emptyFilters: CampaignFilters = { types: [], hubs: [], companies: [], networks: [], emailQualities: [], excludeExistingClients: true };
+
+function FilterPicker({ label, options, selected, onChange }: { label: string; options: string[]; selected: string[]; onChange: (next: string[]) => void }) {
+  return <details className="filter-picker"><summary><span>{label}</span><strong>{selected.length ? `${selected.length} elegidos` : "Todos"}</strong></summary><div>{options.map((option) => <label key={option}><input type="checkbox" checked={selected.includes(option)} onChange={(event) => onChange(event.target.checked ? [...selected, option] : selected.filter((item) => item !== option))}/><span>{option}</span></label>)}{!options.length && <small>Importá contactos para habilitar este filtro.</small>}</div></details>;
+}
 
 const statusLabels: Record<string, string> = {
   DRAFT: "Borrador", READY: "Listo", QUEUED: "En cola", PROCESSING: "Procesando",
@@ -37,12 +47,17 @@ export default function DashboardClient() {
   const [tab, setTab] = useState("contacts");
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activeTemplate, setActiveTemplate] = useState<string | null>(null);
   const [editor, setEditor] = useState<Template | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [authRequired, setAuthRequired] = useState(false);
+  const [contactModal, setContactModal] = useState<"manual" | "xlsx" | null>(null);
+  const [newContact, setNewContact] = useState({ name: "", email: "", company: "", companyType: "" });
+  const [xlsxFile, setXlsxFile] = useState<File | null>(null);
+  const [campaignModal, setCampaignModal] = useState(false);
+  const [campaign, setCampaign] = useState({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: emptyFilters });
+  const [campaignCount, setCampaignCount] = useState(0);
 
   async function load() {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
@@ -62,6 +77,17 @@ export default function DashboardClient() {
     const template = data?.templates.find((item) => item.id === activeTemplate);
     if (template) setEditor({ ...template });
   }, [activeTemplate, data]);
+  useEffect(() => {
+    if (!campaignModal) return;
+    const timeout = window.setTimeout(async () => {
+      try {
+        const response = await fetch("/api/campaigns/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(campaign.filters) });
+        const body = await response.json();
+        if (response.ok) setCampaignCount(body.count);
+      } catch { setCampaignCount(0); }
+    }, 200);
+    return () => window.clearTimeout(timeout);
+  }, [campaign.filters, campaignModal]);
 
   const filtered = useMemo(() => {
     if (!data) return [];
@@ -110,6 +136,56 @@ export default function DashboardClient() {
     finally { setBusy(false); }
   }
 
+  async function createContact(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const response = await fetch("/api/contacts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "manual", contact: newContact }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      setNewContact({ name: "", email: "", company: "", companyType: "" });
+      setContactModal(null);
+      await load();
+      notify("Contacto agregado correctamente.");
+    } catch (error) { notify(error instanceof Error ? error.message : "No se pudo agregar el contacto."); }
+    finally { setBusy(false); }
+  }
+
+  async function importXlsx(event: React.FormEvent) {
+    event.preventDefault();
+    if (!xlsxFile) return notify("Seleccioná un archivo Excel.");
+    setBusy(true);
+    try {
+      const form = new FormData();
+      form.set("file", xlsxFile);
+      const response = await fetch("/api/imports/contacts", { method: "POST", body: form });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      setXlsxFile(null);
+      setContactModal(null);
+      await load();
+      notify(`${body.created} nuevos · ${body.updated} actualizados${body.rejected ? ` · ${body.rejected} rechazados` : ""}`);
+    } catch (error) { notify(error instanceof Error ? error.message : "No se pudo importar el Excel."); }
+    finally { setBusy(false); }
+  }
+
+  async function createCampaign(event: React.FormEvent) {
+    event.preventDefault();
+    if (!campaignCount) return notify("Los filtros no tienen contactos elegibles.");
+    if (!window.confirm(`Se programarán ${campaignCount} mensajes con un intervalo de ${campaign.intervalMinutes} minutos. ¿Continuar?`)) return;
+    setBusy(true);
+    try {
+      const response = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...campaign, startAt: campaign.startAt ? new Date(campaign.startAt).toISOString() : undefined }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      setCampaign({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: emptyFilters });
+      setCampaignModal(false);
+      await load();
+      notify(`Campaña creada con ${body.scheduled} destinatarios.`);
+    } catch (error) { notify(error instanceof Error ? error.message : "No se pudo crear la campaña."); }
+    finally { setBusy(false); }
+  }
+
   if (authRequired) return <div className="auth-page"><div className="auth-card"><div className="auth-brand">R</div><p className="eyebrow">RELAY WORKSPACE</p><h1>Tu comunicación comercial, en orden.</h1><p>Conectá la cuenta autorizada de Google para administrar campañas, enviar mensajes y detectar respuestas.</p><a className="google-button" href="/api/google/connect"><span>G</span>Continuar con Google</a><small>Solicitaremos permiso para enviar correos y consultar únicamente sus metadatos.</small></div></div>;
   if (!data) return <div className="loading"><div className="loading-mark">R</div><p>{toast || "Preparando tu espacio…"}</p></div>;
 
@@ -133,7 +209,7 @@ export default function DashboardClient() {
         <header className="topline"><div><span className={`pulse ${data.sendingEnabled ? "on" : ""}`}/>{data.sendingEnabled ? "Automatización activa" : "Envíos pausados"}</div><button className="ghost" onClick={() => load()}>Actualizar</button></header>
 
         {tab === "contacts" && <section>
-          <div className="page-title"><div><p className="eyebrow">BASE COMERCIAL</p><h1>Contactos</h1><p>Organizá prospectos y controlá cada comunicación desde un solo lugar.</p></div><div className="title-actions"><button className="secondary">Importar CSV</button><button className="primary">+ Nuevo contacto</button></div></div>
+          <div className="page-title"><div><p className="eyebrow">BASE COMERCIAL</p><h1>Contactos</h1><p>Cargá la base diaria completa. Las campañas deciden después a quién contactar.</p></div><div className="title-actions"><button className="secondary" onClick={() => setContactModal("xlsx")}>Importar Excel</button><button className="primary" onClick={() => setContactModal("manual")}>+ Nuevo contacto</button></div></div>
           <div className="stats">
             <article><span>Total de contactos</span><strong>{counts.total}</strong><small>en la base actual</small></article>
             <article><span>En cola</span><strong>{counts.queued}</strong><small>programados o procesando</small></article>
@@ -141,21 +217,22 @@ export default function DashboardClient() {
             <article><span>Requieren atención</span><strong>{counts.errors}</strong><small>errores para revisar</small></article>
           </div>
           <div className="card table-card">
-            <div className="toolbar"><div className="search">⌕<input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nombre, empresa o email"/></div><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Todos los estados</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="selection">{selected.size} seleccionados</span><button className="secondary" disabled={!selected.size}>Agregar a campaña</button></div>
-            <div className="table-scroll"><table><thead><tr><th><input type="checkbox" onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((c) => c.id)) : new Set())}/></th><th>Contacto</th><th>Empresa</th><th>Tipo</th><th>Estado</th><th>Actualización</th><th/></tr></thead><tbody>{filtered.map((contact) => <tr key={contact.id}><td><input type="checkbox" checked={selected.has(contact.id)} onChange={(e) => setSelected((current) => { const next = new Set(current); e.target.checked ? next.add(contact.id) : next.delete(contact.id); return next; })}/></td><td><div className="person"><span>{contact.name.split(" ").map((word) => word[0]).join("").slice(0,2)}</span><div><strong>{contact.name}</strong><small>{contact.email}</small></div></div></td><td>{contact.company}</td><td><code>{contact.companyType}</code></td><td><span className={`status ${contact.status.toLowerCase()}`}>{statusLabels[contact.status] || contact.status}</span>{contact.lastError && <small className="row-error">{contact.lastError}</small>}</td><td>{new Intl.DateTimeFormat("es-UY", { dateStyle: "medium" }).format(new Date(contact.updatedAt))}</td><td><button className="dots">•••</button></td></tr>)}</tbody></table></div>
+            <div className="toolbar"><div className="search">⌕<input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nombre, empresa o email"/></div><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Todos los estados</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="selection">{filtered.length} resultados</span><button className="secondary" onClick={() => { setTab("campaigns"); setCampaignModal(true); }}>Crear campaña</button></div>
+            <div className="table-scroll"><table><thead><tr><th>Contacto</th><th>Empresa</th><th>Tipo</th><th>Hub</th><th>Calidad email</th><th>Estado</th><th>Actualización</th></tr></thead><tbody>{filtered.map((contact) => <tr key={contact.id}><td><div className="person"><span>{contact.name.split(" ").map((word) => word[0]).join("").slice(0,2)}</span><div><strong>{contact.name}</strong><small>{contact.email}{contact.jobTitle ? ` · ${contact.jobTitle}` : ""}</small></div></div></td><td>{contact.company || "—"}<small className="cell-detail">{contact.network}</small></td><td><code>{contact.companyType}</code></td><td>{contact.hub || contact.city || "—"}</td><td><span className="quality">{contact.emailQuality || "Sin dato"}</span></td><td><span className={`status ${contact.status.toLowerCase()}`}>{statusLabels[contact.status] || contact.status}</span>{contact.lastError && <small className="row-error">{contact.lastError}</small>}</td><td>{new Intl.DateTimeFormat("es-UY", { dateStyle: "medium" }).format(new Date(contact.updatedAt))}</td></tr>)}{!filtered.length && <tr><td colSpan={7}><div className="empty-state"><strong>{data.contacts.length ? "No hay coincidencias" : "Todavía no hay contactos"}</strong><span>{data.contacts.length ? "Probá con otro filtro." : "Importá el Excel diario para construir la base comercial."}</span></div></td></tr>}</tbody></table></div>
           </div>
+          {!!data.imports?.length && <div className="imports-strip"><strong>Última importación</strong><span>{data.imports[0].fileName}</span><small>{data.imports[0].created} nuevos · {data.imports[0].updated} actualizados · {new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(data.imports[0].createdAt))}</small></div>}
         </section>}
 
         {tab === "templates" && <section>
           <div className="page-title"><div><p className="eyebrow">CONTENIDO</p><h1>Plantillas</h1><p>Personalizá el mensaje para cada tipo de empresa y conservá su historial.</p></div><button className="primary">+ Nueva plantilla</button></div>
           <div className="template-layout"><div className="card template-list"><div className="section-head"><strong>Tipos de mensaje</strong><span>{data.templates.length}</span></div>{data.templates.map((template) => <button key={template.id} className={activeTemplate === template.id ? "active" : ""} onClick={() => setActiveTemplate(template.id)}><span>{template.code.replace("TIPO_", "0")}</span><div><strong>{template.name}</strong><small>{template.code} · versión {template.version}</small></div><em className={template.active ? "enabled" : ""}/></button>)}</div>
-            {editor && <div className="card editor"><div className="editor-head"><div><p className="eyebrow">{editor.code}</p><h2>{editor.name}</h2></div><label className="toggle"><input type="checkbox" checked={editor.active} onChange={(e) => setEditor({ ...editor, active: e.target.checked })}/><span/></label></div><div className="form-row"><label>Nombre interno<input value={editor.name} onChange={(e) => setEditor({ ...editor, name: e.target.value })}/></label><label>Código<input value={editor.code} disabled/></label></div><label>Asunto<input value={editor.subject} onChange={(e) => setEditor({ ...editor, subject: e.target.value })}/></label><label>Mensaje<textarea value={editor.body} onChange={(e) => setEditor({ ...editor, body: e.target.value })}/></label><div className="variables"><span>Variables</span>{["{{nombre}}", "{{empresa}}", "{{email}}"].map((variable) => <code key={variable}>{variable}</code>)}</div><div className="editor-actions"><span>Los cambios crean una nueva versión.</span><button className="primary" disabled={busy} onClick={saveTemplate}>Guardar cambios</button></div></div>}
+            {editor && <div className="card editor"><div className="editor-head"><div><p className="eyebrow">{editor.code}</p><h2>{editor.name}</h2></div><label className="toggle"><input type="checkbox" checked={editor.active} onChange={(e) => setEditor({ ...editor, active: e.target.checked })}/><span/></label></div><div className="form-row"><label>Nombre interno<input value={editor.name} onChange={(e) => setEditor({ ...editor, name: e.target.value })}/></label><label>Código<input value={editor.code} disabled/></label></div><label>Asunto<input value={editor.subject} onChange={(e) => setEditor({ ...editor, subject: e.target.value })}/></label><label>Mensaje<textarea value={editor.body} onChange={(e) => setEditor({ ...editor, body: e.target.value })}/></label><div className="variables"><span>Variables</span>{["{{nombre}}", "{{empresa}}", "{{email}}", "{{tipo}}", "{{hub}}", "{{red}}", "{{cargo}}", "{{ciudad}}"].map((variable) => <code key={variable}>{variable}</code>)}</div><div className="editor-actions"><span>Los cambios crean una nueva versión.</span><button className="primary" disabled={busy} onClick={saveTemplate}>Guardar cambios</button></div></div>}
           </div>
         </section>}
 
         {tab === "campaigns" && <section>
-          <div className="page-title"><div><p className="eyebrow">AUTOMATIZACIÓN</p><h1>Campañas</h1><p>Programá envíos graduales y seguí su avance sin perder control.</p></div><button className="primary">+ Crear campaña</button></div>
-          <div className="campaign-grid">{data.campaigns.map((campaign) => <article className="card campaign" key={campaign.id}><div className="campaign-head"><span className={`status ${campaign.status.toLowerCase()}`}>{campaign.status === "DRAFT" ? "Borrador" : campaign.status}</span><button className="dots">•••</button></div><h2>{campaign.name}</h2><p>{campaign.total} destinatarios · intervalo de 5 minutos</p><div className="progress"><span style={{ width: `${campaign.total ? (campaign.sent / campaign.total) * 100 : 0}%` }}/></div><div className="campaign-metrics"><div><strong>{campaign.sent}</strong><small>Enviados</small></div><div><strong>{campaign.total - campaign.sent - campaign.errors}</strong><small>Pendientes</small></div><div><strong>{campaign.errors}</strong><small>Errores</small></div></div><button className="wide-button">Configurar campaña</button></article>)}</div>
+          <div className="page-title"><div><p className="eyebrow">AUTOMATIZACIÓN</p><h1>Campañas</h1><p>Elegí un segmento de la base, asignale un mensaje y programá los envíos.</p></div><button className="primary" onClick={() => setCampaignModal(true)}>+ Crear campaña</button></div>
+          <div className="campaign-grid">{data.campaigns.map((campaign) => <article className="card campaign" key={campaign.id}><div className="campaign-head"><span className={`status ${campaign.status.toLowerCase()}`}>{campaign.status === "DRAFT" ? "Borrador" : campaign.status}</span><button className="dots">•••</button></div><h2>{campaign.name}</h2><p>{campaign.total} destinatarios · {campaign.templateName || "Plantilla"}</p><div className="campaign-filters">{campaign.filters?.types?.slice(0,2).map((value) => <span key={value}>{value}</span>)}{campaign.filters?.hubs?.slice(0,2).map((value) => <span key={value}>{value}</span>)}</div><div className="progress"><span style={{ width: `${campaign.total ? (campaign.sent / campaign.total) * 100 : 0}%` }}/></div><div className="campaign-metrics"><div><strong>{campaign.sent}</strong><small>Enviados</small></div><div><strong>{campaign.total - campaign.sent - campaign.errors}</strong><small>Pendientes</small></div><div><strong>{campaign.errors}</strong><small>Errores</small></div></div></article>)}{!data.campaigns.length && <div className="card campaign-empty"><strong>Todavía no hay campañas</strong><p>Importá la base y creá un segmento por tipo, hub, empresa, red o calidad del email.</p><button className="primary" onClick={() => setCampaignModal(true)}>Crear primera campaña</button></div>}</div>
         </section>}
 
         {tab === "activity" && <section>
@@ -170,6 +247,42 @@ export default function DashboardClient() {
             <div className="card settings-card"><div><h2>Política de envío</h2><p>La primera versión programa un mensaje cada cinco minutos.</p></div><div className="policy"><label>Intervalo<input value="5 minutos" disabled/></label><label>Zona horaria<input value="America/Montevideo" disabled/></label></div></div></div>
         </section>}
       </main>
+      {contactModal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setContactModal(null); }}>
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="contact-modal-title">
+          <div className="modal-head"><div><p className="eyebrow">BASE COMERCIAL</p><h2 id="contact-modal-title">{contactModal === "manual" ? "Nuevo contacto" : "Importar contactos"}</h2></div><button className="modal-close" onClick={() => setContactModal(null)} disabled={busy} aria-label="Cerrar">×</button></div>
+          {contactModal === "manual" ? <form onSubmit={createContact} className="modal-form">
+            <label>Nombre y apellido<input required maxLength={160} value={newContact.name} onChange={(event) => setNewContact({ ...newContact, name: event.target.value })} placeholder="Ej. Ana Pérez" autoFocus/></label>
+            <label>Email<input required type="email" maxLength={320} value={newContact.email} onChange={(event) => setNewContact({ ...newContact, email: event.target.value })} placeholder="ana@empresa.com"/></label>
+            <label>Empresa<input maxLength={200} value={newContact.company} onChange={(event) => setNewContact({ ...newContact, company: event.target.value })} placeholder="Nombre de la empresa"/></label>
+            <label>Tipo o vertical<input required list="contact-types" maxLength={200} value={newContact.companyType} onChange={(event) => setNewContact({ ...newContact, companyType: event.target.value })} placeholder="Ej. Agencia, Fintech, Aerolíneas"/><datalist id="contact-types">{data.filterOptions?.types?.map((value) => <option value={value} key={value}/>)}</datalist></label>
+            <div className="modal-actions"><button type="button" className="secondary" onClick={() => setContactModal(null)} disabled={busy}>Cancelar</button><button type="submit" className="primary" disabled={busy}>{busy ? "Guardando…" : "Agregar contacto"}</button></div>
+          </form> : <form onSubmit={importXlsx} className="modal-form">
+            <div className="csv-help"><strong>Excel diario de prospección</strong><p>El sistema detecta automáticamente la hoja y las columnas <code>Tipo</code>, <code>Hub</code>, <code>Agencia o empresa</code>, <code>Red</code>, <code>Nombre</code>, <code>Cargo</code>, <code>Ciudad</code>, <code>Email</code> y sus datos adicionales.</p></div>
+            <label className="file-picker"><input type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setXlsxFile(event.target.files?.[0] ?? null)}/><span>{xlsxFile ? xlsxFile.name : "Elegir archivo .xlsx"}</span><small>Máximo 8 MB o 5000 contactos.</small></label>
+            <div className="import-note"><strong>Actualización sin duplicados</strong><span>El email identifica a cada persona. Si vuelve a aparecer otro día, actualizamos sus datos y conservamos su historial de comunicación.</span></div>
+            <div className="modal-actions"><button type="button" className="secondary" onClick={() => setContactModal(null)} disabled={busy}>Cancelar</button><button type="submit" className="primary" disabled={busy || !xlsxFile}>{busy ? "Importando…" : "Importar Excel"}</button></div>
+          </form>}
+        </div>
+      </div>}
+      {campaignModal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setCampaignModal(false); }}>
+        <div className="modal campaign-modal" role="dialog" aria-modal="true" aria-labelledby="campaign-modal-title">
+          <div className="modal-head"><div><p className="eyebrow">NUEVA CAMPAÑA</p><h2 id="campaign-modal-title">Elegir destinatarios y mensaje</h2></div><button className="modal-close" onClick={() => setCampaignModal(false)} disabled={busy} aria-label="Cerrar">×</button></div>
+          <form onSubmit={createCampaign} className="modal-form">
+            <div className="form-row"><label>Nombre de la campaña<input required maxLength={160} value={campaign.name} onChange={(event) => setCampaign({ ...campaign, name: event.target.value })} placeholder="Ej. Agencias de Panamá" autoFocus/></label><label>Plantilla<select required value={campaign.templateId} onChange={(event) => setCampaign({ ...campaign, templateId: event.target.value })}><option value="">Seleccionar…</option>{data.templates.filter((template) => template.active).map((template) => <option value={template.id} key={template.id}>{template.name}</option>)}</select></label></div>
+            <div className="filter-grid">
+              <FilterPicker label="Tipo" options={data.filterOptions?.types || []} selected={campaign.filters.types} onChange={(types) => setCampaign({ ...campaign, filters: { ...campaign.filters, types } })}/>
+              <FilterPicker label="Hub" options={data.filterOptions?.hubs || []} selected={campaign.filters.hubs} onChange={(hubs) => setCampaign({ ...campaign, filters: { ...campaign.filters, hubs } })}/>
+              <FilterPicker label="Empresa" options={data.filterOptions?.companies || []} selected={campaign.filters.companies} onChange={(companies) => setCampaign({ ...campaign, filters: { ...campaign.filters, companies } })}/>
+              <FilterPicker label="Red" options={data.filterOptions?.networks || []} selected={campaign.filters.networks} onChange={(networks) => setCampaign({ ...campaign, filters: { ...campaign.filters, networks } })}/>
+              <FilterPicker label="Calidad del email" options={data.filterOptions?.emailQualities || []} selected={campaign.filters.emailQualities} onChange={(emailQualities) => setCampaign({ ...campaign, filters: { ...campaign.filters, emailQualities } })}/>
+            </div>
+            <label className="check-row"><input type="checkbox" checked={campaign.filters.excludeExistingClients} onChange={(event) => setCampaign({ ...campaign, filters: { ...campaign.filters, excludeExistingClients: event.target.checked } })}/><span><strong>Excluir clientes actuales</strong><small>No incluye filas marcadas como “Ya es cliente”.</small></span></label>
+            <div className="form-row"><label>Inicio (opcional)<input type="datetime-local" value={campaign.startAt} onChange={(event) => setCampaign({ ...campaign, startAt: event.target.value })}/></label><label>Intervalo en minutos<input required type="number" min={1} max={1440} value={campaign.intervalMinutes} onChange={(event) => setCampaign({ ...campaign, intervalMinutes: Number(event.target.value) })}/></label></div>
+            <div className="campaign-preview"><div><span>Destinatarios elegibles</span><strong>{campaignCount}</strong></div><p>Se enviará un mensaje cada {campaign.intervalMinutes} minutos. Los contactos ya enviados, pausados o que respondieron quedan fuera.</p></div>
+            <div className="modal-actions"><button type="button" className="secondary" onClick={() => setCampaignModal(false)} disabled={busy}>Cancelar</button><button type="submit" className="primary" disabled={busy || !campaign.templateId || !campaignCount}>{busy ? "Creando…" : `Crear campaña (${campaignCount})`}</button></div>
+          </form>
+        </div>
+      </div>}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
