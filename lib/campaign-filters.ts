@@ -1,6 +1,8 @@
 import { z } from "zod";
 
 export const campaignFiltersSchema = z.object({
+  importId: z.string().uuid().nullable().default(null),
+  importScope: z.enum(["all", "new"]).default("new"),
   types: z.array(z.string().max(200)).max(100).default([]),
   hubs: z.array(z.string().max(200)).max(100).default([]),
   companies: z.array(z.string().max(200)).max(200).default([]),
@@ -25,5 +27,9 @@ export function contactFilterSql(workspaceId: string, filters: CampaignFilters) 
   addArray("c.network", filters.networks);
   addArray("c.email_quality", filters.emailQualities);
   if (filters.excludeExistingClients) clauses.push("COALESCE(c.existing_client_office,'') NOT IN ('Sí','Si','SI','SÍ')");
+  if (filters.importId) {
+    values.push(filters.importId);
+    clauses.push(`EXISTS (SELECT 1 FROM contact_import_items ii JOIN contact_imports ci ON ci.id=ii.import_id WHERE ii.contact_id=c.id AND ii.import_id=$${values.length}::uuid AND ci.workspace_id=c.workspace_id${filters.importScope === "new" ? " AND ii.was_new=true" : ""})`);
+  }
   return { where: clauses.join(" AND "), values };
 }

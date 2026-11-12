@@ -25,6 +25,10 @@ export async function POST(request: Request) {
         [input.templateId, viewer.workspaceId],
       );
       if (!template.rows[0]) throw new Error("La plantilla seleccionada no está disponible.");
+      if (input.filters.importId) {
+        const source = await client.query("SELECT 1 FROM contact_imports WHERE id=$1 AND workspace_id=$2", [input.filters.importId, viewer.workspaceId]);
+        if (!source.rows[0]) throw new Error("La lista seleccionada no existe en este espacio.");
+      }
       const filtered = contactFilterSql(viewer.workspaceId, input.filters);
       const contacts = await client.query<{ id: string }>(
         `SELECT c.id FROM contacts c WHERE ${filtered.where} ORDER BY c.created_at,c.id`,

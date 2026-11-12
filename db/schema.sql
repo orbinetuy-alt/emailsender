@@ -124,6 +124,16 @@ CREATE TABLE IF NOT EXISTS contact_imports (
 
 CREATE INDEX IF NOT EXISTS contact_imports_workspace_created_idx ON contact_imports(workspace_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS contact_import_items (
+  import_id uuid NOT NULL REFERENCES contact_imports(id) ON DELETE CASCADE,
+  contact_id uuid NOT NULL REFERENCES contacts(id) ON DELETE RESTRICT,
+  source_row integer NOT NULL,
+  was_new boolean NOT NULL,
+  PRIMARY KEY (import_id, contact_id)
+);
+
+CREATE INDEX IF NOT EXISTS contact_import_items_contact_idx ON contact_import_items(contact_id);
+
 CREATE TABLE IF NOT EXISTS email_jobs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,

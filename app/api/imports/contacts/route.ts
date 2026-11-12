@@ -39,8 +39,15 @@ export async function POST(request: Request) {
         [viewer.workspaceId, valid.map((contact) => contact.email)],
       );
       const existingEmails = new Set(existing.rows.map((item) => item.email));
+      const created = valid.filter((contact) => !existingEmails.has(contact.email)).length;
+      const updated = valid.length - created;
+      const imported = await client.query<{ id: string }>(
+        `INSERT INTO contact_imports(workspace_id,file_name,total_rows,created_count,updated_count,rejected_count,uploaded_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [viewer.workspaceId, file.name, parsed.length, created, updated, errors.length, viewer.userId],
+      );
       for (const contact of valid) {
-        await client.query(
+        const saved = await client.query<{ id: string }>(
           `INSERT INTO contacts(
              workspace_id,name,company,email,company_type,status,hub,network,job_title,city,email_quality,
              linkedin_url,existing_client_office,source_date,last_imported_at,custom_fields
@@ -49,19 +56,17 @@ export async function POST(request: Request) {
              name=EXCLUDED.name,company=EXCLUDED.company,company_type=EXCLUDED.company_type,hub=EXCLUDED.hub,
              network=EXCLUDED.network,job_title=EXCLUDED.job_title,city=EXCLUDED.city,email_quality=EXCLUDED.email_quality,
              linkedin_url=EXCLUDED.linkedin_url,existing_client_office=EXCLUDED.existing_client_office,
-             source_date=EXCLUDED.source_date,last_imported_at=now(),custom_fields=EXCLUDED.custom_fields,updated_at=now()`,
+             source_date=EXCLUDED.source_date,last_imported_at=now(),custom_fields=EXCLUDED.custom_fields,updated_at=now()
+           RETURNING id`,
           [viewer.workspaceId, contact.name, contact.company, contact.email, contact.companyType, contact.hub, contact.network,
             contact.jobTitle, contact.city, contact.emailQuality, contact.linkedin, contact.existingClientOffice,
             contact.sourceDate, JSON.stringify({ sourceRow: contact.row })],
         );
+        await client.query(
+          "INSERT INTO contact_import_items(import_id,contact_id,source_row,was_new) VALUES($1,$2,$3,$4)",
+          [imported.rows[0].id, saved.rows[0].id, contact.row, !existingEmails.has(contact.email)],
+        );
       }
-      const created = valid.filter((contact) => !existingEmails.has(contact.email)).length;
-      const updated = valid.length - created;
-      const imported = await client.query<{ id: string }>(
-        `INSERT INTO contact_imports(workspace_id,file_name,total_rows,created_count,updated_count,rejected_count,uploaded_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-        [viewer.workspaceId, file.name, parsed.length, created, updated, errors.length, viewer.userId],
-      );
       await client.query(
         "INSERT INTO audit_logs(workspace_id,actor_user_id,action,entity_type,entity_id,metadata) VALUES($1,$2,'CONTACTS_IMPORTED','CONTACT_IMPORT',$3,$4)",
         [viewer.workspaceId, viewer.userId, imported.rows[0].id, JSON.stringify({ detail: `${file.name}: ${created} nuevos, ${updated} actualizados`, created, updated, rejected: errors.length })],
