@@ -9,8 +9,12 @@ export async function getDashboard(workspaceId: string) {
       email_quality AS "emailQuality",existing_client_office AS "existingClientOffice",status,last_error AS "lastError",updated_at AS "updatedAt"
       FROM contacts WHERE workspace_id = $1 ORDER BY updated_at DESC LIMIT 5000`, [workspaceId]),
     query(`SELECT id, code, name, subject, body_text AS body, active, version FROM message_templates WHERE workspace_id = $1 ORDER BY code`, [workspaceId]),
-    query(`SELECT c.id,c.name,c.status,c.start_at AS "startAt",c.filters,t.name AS "templateName",COUNT(j.id)::int AS total,
-      COUNT(j.id) FILTER (WHERE j.status = 'SENT')::int AS sent,COUNT(j.id) FILTER (WHERE j.status = 'ERROR')::int AS errors
+    query(`SELECT c.id,c.name,c.status,c.start_at AS "startAt",c.filters,t.name AS "templateName",
+      COUNT(DISTINCT j.contact_id) FILTER (WHERE j.step_number=0)::int AS total,
+      COUNT(DISTINCT j.contact_id) FILTER (WHERE j.status = 'SENT')::int AS sent,
+      COUNT(DISTINCT j.contact_id) FILTER (WHERE j.reply_detected_at IS NOT NULL)::int AS replied,
+      COUNT(DISTINCT j.contact_id) FILTER (WHERE j.status = 'ERROR')::int AS errors,
+      MIN(j.scheduled_at) FILTER (WHERE j.status='SCHEDULED') AS "nextAt"
       FROM campaigns c LEFT JOIN email_jobs j ON j.campaign_id=c.id LEFT JOIN message_templates t ON t.id=c.template_id
       WHERE c.workspace_id=$1 GROUP BY c.id,t.name ORDER BY c.created_at DESC`, [workspaceId]),
     query(`SELECT id::text, action, COALESCE(metadata->>'detail', entity_type) AS detail, created_at AS "createdAt" FROM audit_logs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30`, [workspaceId]),

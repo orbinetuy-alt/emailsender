@@ -5,7 +5,9 @@ import { useEffect, useMemo, useState } from "react";
 type Contact = { id: string; name: string; company: string; email: string; companyType: string; hub?: string; network?: string; jobTitle?: string; city?: string; emailQuality?: string; existingClientOffice?: string; status: string; updatedAt: string; lastError?: string };
 type Template = { id: string; code: string; name: string; subject: string; body: string; active: boolean; version: number };
 type CampaignFilters = { importId: string | null; importScope: "new" | "all"; types: string[]; hubs: string[]; companies: string[]; networks: string[]; emailQualities: string[]; excludeExistingClients: boolean };
-type Campaign = { id: string; name: string; status: string; total: number; sent: number; errors: number; startAt: string | null; templateName?: string; filters?: CampaignFilters };
+type Campaign = { id: string; name: string; status: string; total: number; sent: number; replied: number; errors: number; nextAt?: string | null; startAt: string | null; templateName?: string; filters?: CampaignFilters };
+type Recipient = { contactId: string; name: string; email: string; company: string; contactStatus: string; lastSentAt: string | null; nextAt: string | null; sentCount: number; errorCount: number; cancelledCount: number; replied: boolean; repliedAt: string | null; lastError: string | null; history: { step: number; status: string; scheduledAt: string; sentAt: string | null; replyAt: string | null; error: string | null }[] };
+type CampaignDetail = { campaign: Campaign & { intervalMinutes: number }; recipients: Recipient[]; followups: { step: number; delayDays: number; templateName: string }[] };
 type Activity = { id: string; action: string; detail: string; createdAt: string };
 type ContactImport = { id: string; fileName: string; total: number; created: number; updated: number; rejected: number; createdAt: string };
 type Dashboard = {
@@ -56,8 +58,11 @@ export default function DashboardClient() {
   const [newContact, setNewContact] = useState({ name: "", email: "", company: "", companyType: "" });
   const [xlsxFile, setXlsxFile] = useState<File | null>(null);
   const [campaignModal, setCampaignModal] = useState(false);
-  const [campaign, setCampaign] = useState({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: emptyFilters });
+  const [campaign, setCampaign] = useState({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: emptyFilters, followups: [] as { delayDays: number; templateId: string }[] });
   const [campaignCount, setCampaignCount] = useState(0);
+  const [campaignRecipients, setCampaignRecipients] = useState<{ name: string; email: string; company: string }[]>([]);
+  const [detail, setDetail] = useState<CampaignDetail | null>(null);
+  const [recipientQuery, setRecipientQuery] = useState("");
 
   async function load() {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
@@ -83,7 +88,7 @@ export default function DashboardClient() {
       try {
         const response = await fetch("/api/campaigns/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(campaign.filters) });
         const body = await response.json();
-        if (response.ok) setCampaignCount(body.count);
+        if (response.ok) { setCampaignCount(body.count); setCampaignRecipients(body.recipients || []); }
       } catch { setCampaignCount(0); }
     }, 200);
     return () => window.clearTimeout(timeout);
@@ -178,12 +183,62 @@ export default function DashboardClient() {
       const response = await fetch("/api/campaigns", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...campaign, startAt: campaign.startAt ? new Date(campaign.startAt).toISOString() : undefined }) });
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
-      setCampaign({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: emptyFilters });
+      setCampaign({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: emptyFilters, followups: [] });
       setCampaignModal(false);
       await load();
       notify(`Campaña creada con ${body.scheduled} destinatarios.`);
     } catch (error) { notify(error instanceof Error ? error.message : "No se pudo crear la campaña."); }
     finally { setBusy(false); }
+  }
+
+  async function openCampaign(id: string) {
+    const response = await fetch(`/api/campaigns/${id}`, { cache: "no-store" });
+    const body = await response.json();
+    if (!response.ok) return notify(body.error || "No se pudo abrir la campaña.");
+    setDetail(body);
+  }
+
+  async function campaignAction(action: "pause" | "resume" | "cancel") {
+    if (!detail) return;
+    if (action === "cancel" && !window.confirm("¿Cancelar todos los envíos pendientes de esta campaña?")) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/campaigns/${detail.campaign.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      await Promise.all([load(), openCampaign(detail.campaign.id)]);
+      notify("Campaña actualizada.");
+    } catch (error) { notify(error instanceof Error ? error.message : "Error"); }
+    finally { setBusy(false); }
+  }
+
+  async function excludeRecipient(contactId: string) {
+    if (!detail || !window.confirm("¿Excluir los próximos envíos a este contacto en esta campaña?")) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/campaigns/${detail.campaign.id}/recipients/${contactId}`, { method: "PATCH" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      await Promise.all([load(), openCampaign(detail.campaign.id)]);
+      notify("Próximos envíos excluidos.");
+    } catch (error) { notify(error instanceof Error ? error.message : "Error"); }
+    finally { setBusy(false); }
+  }
+
+  function exportCampaign() {
+    if (!detail) return;
+    const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const rows = [["Nombre", "Email", "Empresa", "Estado", "Envíos", "Último envío", "Respuesta", "Próximo envío", "Error"],
+      ...detail.recipients.map((item) => [item.name, item.email, item.company,
+        item.replied ? "Respondió" : item.errorCount ? "Error" : item.sentCount ? "Sin respuesta" : item.cancelledCount ? "Excluido" : "Pendiente",
+        item.sentCount, item.lastSentAt, item.repliedAt, item.nextAt, item.lastError])];
+    const csv = "\uFEFF" + rows.map((row) => row.map(escape).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `campana-${detail.campaign.id}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
   }
 
   if (authRequired) return <div className="auth-page"><div className="auth-card"><div className="auth-brand">R</div><p className="eyebrow">RELAY WORKSPACE</p><h1>Tu comunicación comercial, en orden.</h1><p>Conectá la cuenta autorizada de Google para administrar campañas, enviar mensajes y detectar respuestas.</p><a className="google-button" href="/api/google/connect"><span>G</span>Continuar con Google</a><small>Solicitaremos permiso para enviar correos y consultar únicamente sus metadatos.</small></div></div>;
@@ -220,7 +275,7 @@ export default function DashboardClient() {
             <div className="toolbar"><div className="search">⌕<input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nombre, empresa o email"/></div><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Todos los estados</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="selection">{filtered.length} resultados</span><button className="secondary" onClick={() => { setTab("campaigns"); setCampaignModal(true); }}>Crear campaña</button></div>
             <div className="table-scroll"><table><thead><tr><th>Contacto</th><th>Empresa</th><th>Tipo</th><th>Hub</th><th>Calidad email</th><th>Estado</th><th>Actualización</th></tr></thead><tbody>{filtered.map((contact) => <tr key={contact.id}><td><div className="person"><span>{contact.name.split(" ").map((word) => word[0]).join("").slice(0,2)}</span><div><strong>{contact.name}</strong><small>{contact.email}{contact.jobTitle ? ` · ${contact.jobTitle}` : ""}</small></div></div></td><td>{contact.company || "—"}<small className="cell-detail">{contact.network}</small></td><td><code>{contact.companyType}</code></td><td>{contact.hub || contact.city || "—"}</td><td><span className="quality">{contact.emailQuality || "Sin dato"}</span></td><td><span className={`status ${contact.status.toLowerCase()}`}>{statusLabels[contact.status] || contact.status}</span>{contact.lastError && <small className="row-error">{contact.lastError}</small>}</td><td>{new Intl.DateTimeFormat("es-UY", { dateStyle: "medium" }).format(new Date(contact.updatedAt))}</td></tr>)}{!filtered.length && <tr><td colSpan={7}><div className="empty-state"><strong>{data.contacts.length ? "No hay coincidencias" : "Todavía no hay contactos"}</strong><span>{data.contacts.length ? "Probá con otro filtro." : "Importá el Excel diario para construir la base comercial."}</span></div></td></tr>}</tbody></table></div>
           </div>
-          {!!data.imports?.length && <div className="card imports-list"><div className="section-head"><strong>Listas importadas</strong><span>{data.imports.length} recientes</span></div>{data.imports.map((item) => <div className="import-row" key={item.id}><div><strong>{item.fileName}</strong><small>{new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.createdAt))} · {item.total} filas</small></div><span>{item.created} nuevos · {item.updated} existentes{item.rejected ? ` · ${item.rejected} rechazados` : ""}</span><button className="secondary" onClick={() => { setCampaign({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: { ...emptyFilters, importId: item.id } }); setTab("campaigns"); setCampaignModal(true); }}>Campaña con nuevos</button></div>)}</div>}
+          {!!data.imports?.length && <div className="card imports-list"><div className="section-head"><strong>Listas importadas</strong><span>{data.imports.length} recientes</span></div>{data.imports.map((item) => <div className="import-row" key={item.id}><div><strong>{item.fileName}</strong><small>{new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.createdAt))} · {item.total} filas</small></div><span>{item.created} nuevos · {item.updated} existentes{item.rejected ? ` · ${item.rejected} rechazados` : ""}</span><button className="secondary" onClick={() => { setCampaign({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: { ...emptyFilters, importId: item.id }, followups: [] }); setTab("campaigns"); setCampaignModal(true); }}>Campaña con nuevos</button></div>)}</div>}
         </section>}
 
         {tab === "templates" && <section>
@@ -232,7 +287,7 @@ export default function DashboardClient() {
 
         {tab === "campaigns" && <section>
           <div className="page-title"><div><p className="eyebrow">AUTOMATIZACIÓN</p><h1>Campañas</h1><p>Elegí un segmento de la base, asignale un mensaje y programá los envíos.</p></div><button className="primary" onClick={() => setCampaignModal(true)}>+ Crear campaña</button></div>
-          <div className="campaign-grid">{data.campaigns.map((campaign) => <article className="card campaign" key={campaign.id}><div className="campaign-head"><span className={`status ${campaign.status.toLowerCase()}`}>{campaign.status === "DRAFT" ? "Borrador" : campaign.status}</span><button className="dots">•••</button></div><h2>{campaign.name}</h2><p>{campaign.total} destinatarios · {campaign.templateName || "Plantilla"}</p><div className="campaign-filters">{campaign.filters?.types?.slice(0,2).map((value) => <span key={value}>{value}</span>)}{campaign.filters?.hubs?.slice(0,2).map((value) => <span key={value}>{value}</span>)}</div><div className="progress"><span style={{ width: `${campaign.total ? (campaign.sent / campaign.total) * 100 : 0}%` }}/></div><div className="campaign-metrics"><div><strong>{campaign.sent}</strong><small>Enviados</small></div><div><strong>{campaign.total - campaign.sent - campaign.errors}</strong><small>Pendientes</small></div><div><strong>{campaign.errors}</strong><small>Errores</small></div></div></article>)}{!data.campaigns.length && <div className="card campaign-empty"><strong>Todavía no hay campañas</strong><p>Importá la base y creá un segmento por tipo, hub, empresa, red o calidad del email.</p><button className="primary" onClick={() => setCampaignModal(true)}>Crear primera campaña</button></div>}</div>
+          <div className="campaign-grid">{data.campaigns.map((campaign) => <article className="card campaign" key={campaign.id}><div className="campaign-head"><span className={`status ${campaign.status.toLowerCase()}`}>{campaign.status === "DRAFT" ? "Borrador" : campaign.status}</span><button className="secondary" onClick={() => openCampaign(campaign.id)}>Ver resultados</button></div><h2>{campaign.name}</h2><p>{campaign.total} destinatarios · {campaign.templateName || "Plantilla"}</p><div className="campaign-filters">{campaign.filters?.types?.slice(0,2).map((value) => <span key={value}>{value}</span>)}{campaign.filters?.hubs?.slice(0,2).map((value) => <span key={value}>{value}</span>)}</div><div className="progress"><span style={{ width: `${campaign.total ? (campaign.sent / campaign.total) * 100 : 0}%` }}/></div><div className="campaign-metrics"><div><strong>{campaign.sent}</strong><small>Contactados</small></div><div><strong>{campaign.replied}</strong><small>Respondieron</small></div><div><strong>{campaign.errors}</strong><small>Errores</small></div></div>{campaign.nextAt && <small>Próximo envío: {new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(campaign.nextAt))}</small>}</article>)}{!data.campaigns.length && <div className="card campaign-empty"><strong>Todavía no hay campañas</strong><p>Importá la base y creá un segmento por tipo, hub, empresa, red o calidad del email.</p><button className="primary" onClick={() => setCampaignModal(true)}>Crear primera campaña</button></div>}</div>
         </section>}
 
         {tab === "activity" && <section>
@@ -279,9 +334,20 @@ export default function DashboardClient() {
             </div>
             <label className="check-row"><input type="checkbox" checked={campaign.filters.excludeExistingClients} onChange={(event) => setCampaign({ ...campaign, filters: { ...campaign.filters, excludeExistingClients: event.target.checked } })}/><span><strong>Excluir clientes actuales</strong><small>No incluye filas marcadas como “Ya es cliente”.</small></span></label>
             <div className="form-row"><label>Inicio (opcional)<input type="datetime-local" value={campaign.startAt} onChange={(event) => setCampaign({ ...campaign, startAt: event.target.value })}/></label><label>Intervalo en minutos<input required type="number" min={1} max={1440} value={campaign.intervalMinutes} onChange={(event) => setCampaign({ ...campaign, intervalMinutes: Number(event.target.value) })}/></label></div>
-            <div className="campaign-preview"><div><span>Destinatarios elegibles</span><strong>{campaignCount}</strong></div><p>Se enviará un mensaje cada {campaign.intervalMinutes} minutos. Los contactos ya enviados, pausados o que respondieron quedan fuera.</p></div>
+            <div className="followup-config"><strong>Seguimientos automáticos</strong><p>Se envían solo si el contacto no respondió. Cada plazo se cuenta desde el mensaje anterior.</p>{campaign.followups.map((followup, index) => <div className="form-row" key={index}><label>Después de (días)<input type="number" min={1} max={90} value={followup.delayDays} onChange={(event) => setCampaign({ ...campaign, followups: campaign.followups.map((item, i) => i === index ? { ...item, delayDays: Number(event.target.value) } : item) })}/></label><label>Mensaje de seguimiento<select required value={followup.templateId} onChange={(event) => setCampaign({ ...campaign, followups: campaign.followups.map((item, i) => i === index ? { ...item, templateId: event.target.value } : item) })}><option value="">Seleccionar…</option>{data.templates.filter((template) => template.active).map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label><button type="button" className="secondary" onClick={() => setCampaign({ ...campaign, followups: campaign.followups.filter((_, i) => i !== index) })}>Quitar</button></div>)}{campaign.followups.length < 3 && <button type="button" className="secondary" onClick={() => setCampaign({ ...campaign, followups: [...campaign.followups, { delayDays: 5, templateId: "" }] })}>+ Agregar seguimiento</button>}</div>
+            <div className="campaign-preview"><div><span>Destinatarios elegibles</span><strong>{campaignCount}</strong></div><p>Se enviará un mensaje cada {campaign.intervalMinutes} minutos. Los contactos ya enviados, pausados o que respondieron quedan fuera.</p><details><summary>Revisar destinatarios ({campaignRecipients.length})</summary><div className="recipient-preview-list">{campaignRecipients.map((item) => <div key={item.email}>{item.name} · {item.company || "Sin empresa"} · {item.email}</div>)}</div></details></div>
             <div className="modal-actions"><button type="button" className="secondary" onClick={() => setCampaignModal(false)} disabled={busy}>Cancelar</button><button type="submit" className="primary" disabled={busy || !campaign.templateId || !campaignCount}>{busy ? "Creando…" : `Crear campaña (${campaignCount})`}</button></div>
           </form>
+        </div>
+      </div>}
+      {detail && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDetail(null); }}>
+        <div className="modal campaign-detail-modal" role="dialog" aria-modal="true" aria-labelledby="campaign-detail-title">
+          <div className="modal-head"><div><p className="eyebrow">RESULTADOS DE CAMPAÑA</p><h2 id="campaign-detail-title">{detail.campaign.name}</h2><small>{detail.campaign.templateName} · {detail.campaign.status}</small></div><button className="modal-close" onClick={() => setDetail(null)} aria-label="Cerrar">×</button></div>
+          <div className="detail-actions">{["SCHEDULED", "RUNNING"].includes(detail.campaign.status) && <button className="secondary" disabled={busy} onClick={() => campaignAction("pause")}>Pausar</button>}{detail.campaign.status === "PAUSED" && <button className="primary" disabled={busy} onClick={() => campaignAction("resume")}>Reanudar</button>}{["SCHEDULED", "RUNNING", "PAUSED"].includes(detail.campaign.status) && <button className="danger" disabled={busy} onClick={() => campaignAction("cancel")}>Cancelar pendientes</button>}<button className="secondary" onClick={() => openCampaign(detail.campaign.id)}>Actualizar</button><button className="secondary" onClick={exportCampaign}>Descargar CSV</button></div>
+          <div className="detail-stats"><div><strong>{detail.recipients.length}</strong><span>Destinatarios</span></div><div><strong>{detail.recipients.filter((item) => item.sentCount > 0 && !item.replied).length}</strong><span>Sin respuesta</span></div><div><strong>{detail.recipients.filter((item) => item.replied).length}</strong><span>Respondieron</span></div><div><strong>{detail.recipients.filter((item) => item.errorCount > 0).length}</strong><span>Con errores</span></div></div>
+          {!!detail.followups.length && <p className="detail-sequence">Secuencia: mensaje inicial {detail.followups.map((item) => `→ ${item.delayDays} días → ${item.templateName}`).join(" ")}</p>}
+          <div className="search">⌕<input value={recipientQuery} onChange={(event) => setRecipientQuery(event.target.value)} placeholder="Buscar contacto o email"/></div>
+          <div className="detail-recipient-list">{detail.recipients.filter((item) => `${item.name} ${item.email} ${item.company}`.toLowerCase().includes(recipientQuery.toLowerCase())).map((item) => <details key={item.contactId} className="detail-recipient"><summary><div><strong>{item.name}</strong><small>{item.company || "Sin empresa"} · {item.email}</small></div><span className={`status ${(item.replied ? "replied" : item.lastError ? "error" : item.sentCount ? "sent" : "queued")}`}>{item.replied ? "Respondió" : item.lastError ? "Error" : item.sentCount ? "Sin respuesta" : item.cancelledCount ? "Excluido" : "Pendiente"}</span></summary><div className="recipient-history">{item.lastSentAt && <p>Último envío: {new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.lastSentAt))}</p>}{item.repliedAt && <p>Respuesta: {new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.repliedAt))}</p>}{item.nextAt && <p>Próximo envío: {new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(item.nextAt))}</p>}{item.history.map((step) => <div key={step.step}>Mensaje {step.step + 1}: {step.status} · {step.sentAt ? new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(step.sentAt)) : new Intl.DateTimeFormat("es-UY", { dateStyle: "medium", timeStyle: "short" }).format(new Date(step.scheduledAt))}{step.error && <small className="row-error">{step.error}</small>}</div>)}{item.nextAt && <button className="secondary" disabled={busy} onClick={() => excludeRecipient(item.contactId)}>Excluir próximos envíos</button>}</div></details>)}</div>
         </div>
       </div>}
       {toast && <div className="toast">{toast}</div>}

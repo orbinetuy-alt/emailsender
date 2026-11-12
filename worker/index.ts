@@ -8,6 +8,7 @@ type Job = {
   workspace_id: string;
   campaign_id: string;
   contact_id: string;
+  step_number: number;
   email: string;
   name: string;
   company: string;
@@ -30,15 +31,19 @@ const pollInterval = Number(process.env.WORKER_POLL_INTERVAL_MS || 15000);
 async function claimJob() {
   return transaction(async (client) => {
     const result = await client.query<Job>(
-      `SELECT j.id,j.workspace_id,j.campaign_id,j.contact_id,c.email,c.name,c.company,c.company_type,c.hub,c.network,c.job_title,c.city,c.custom_fields,
+      `SELECT j.id,j.workspace_id,j.campaign_id,j.contact_id,j.step_number,c.email,c.name,c.company,c.company_type,c.hub,c.network,c.job_title,c.city,c.custom_fields,
               t.subject,t.body_text,g.encrypted_access_token,g.encrypted_refresh_token,g.google_email
        FROM email_jobs j
        JOIN contacts c ON c.id=j.contact_id
        JOIN message_templates t ON t.id=j.template_id
        JOIN google_connections g ON g.workspace_id=j.workspace_id
        JOIN workspaces w ON w.id=j.workspace_id
+       JOIN campaigns campaign ON campaign.id=j.campaign_id
        WHERE j.status='SCHEDULED' AND j.scheduled_at<=now() AND w.sending_enabled=true
-         AND c.status NOT IN ('DO_NOT_CONTACT','REPLIED','PAUSED')
+         AND campaign.status IN ('SCHEDULED','RUNNING')
+         AND ((j.step_number=0 AND c.status='QUEUED') OR (j.step_number>0 AND c.status='SENT'))
+         AND NOT EXISTS (SELECT 1 FROM email_jobs recent WHERE recent.campaign_id=j.campaign_id AND recent.status='SENT'
+           AND recent.sent_at > now() - (campaign.interval_minutes * interval '1 minute'))
        ORDER BY j.scheduled_at
        FOR UPDATE OF j SKIP LOCKED LIMIT 1`,
     );
@@ -46,6 +51,7 @@ async function claimJob() {
     if (!job) return null;
     await client.query("UPDATE email_jobs SET status='PROCESSING',started_at=now(),attempt_count=attempt_count+1,locked_by=$1,updated_at=now() WHERE id=$2", [workerId, job.id]);
     await client.query("UPDATE contacts SET status='PROCESSING',updated_at=now() WHERE id=$1", [job.contact_id]);
+    await client.query("UPDATE campaigns SET status='RUNNING',updated_at=now() WHERE id=$1 AND status='SCHEDULED'", [job.campaign_id]);
     return job;
   });
 }
@@ -54,7 +60,36 @@ async function processJob(job: Job) {
   const values = { nombre: job.name, empresa: job.company, email: job.email, tipo: job.company_type, hub: job.hub, red: job.network, cargo: job.job_title, ciudad: job.city, ...job.custom_fields };
   const subject = renderMessage(job.subject, values);
   const body = renderMessage(job.body_text, values);
+  let sendAttempted = false;
   try {
+    if (job.step_number > 0) {
+      const earlier = await pool().query<ReplyCheck>(`SELECT j.id,j.workspace_id,j.contact_id,j.gmail_message_id,j.gmail_thread_id,j.sent_at,g.google_email,g.encrypted_access_token,g.encrypted_refresh_token
+        FROM email_jobs j JOIN google_connections g ON g.workspace_id=j.workspace_id
+        WHERE j.campaign_id=$1 AND j.contact_id=$2 AND j.status='SENT' AND j.gmail_thread_id IS NOT NULL`, [job.campaign_id, job.contact_id]);
+      for (const previous of earlier.rows) {
+        const reply = await findReplyInThread({ accessToken: previous.encrypted_access_token ? decryptSecret(previous.encrypted_access_token) : undefined,
+          refreshToken: decryptSecret(previous.encrypted_refresh_token), threadId: previous.gmail_thread_id,
+          sentMessageId: previous.gmail_message_id, accountEmail: previous.google_email, sentAt: previous.sent_at });
+        if (reply) {
+          await recordReply(previous, reply);
+          await transaction(async (client) => {
+            await client.query("UPDATE email_jobs SET status='CANCELLED',updated_at=now() WHERE id=$1 AND status='PROCESSING'", [job.id]);
+            await client.query(`UPDATE campaigns SET status='COMPLETED',updated_at=now() WHERE id=$1 AND status='RUNNING'
+              AND NOT EXISTS (SELECT 1 FROM email_jobs WHERE campaign_id=$1 AND status IN ('SCHEDULED','PROCESSING'))`, [job.campaign_id]);
+          });
+          return;
+        }
+      }
+    }
+    const active = await pool().query("SELECT 1 FROM campaigns ca JOIN contacts co ON co.id=$2 JOIN workspaces w ON w.id=ca.workspace_id WHERE ca.id=$1 AND ca.status='RUNNING' AND co.status='PROCESSING' AND w.sending_enabled=true", [job.campaign_id, job.contact_id]);
+    if (!active.rows[0]) {
+      await transaction(async (client) => {
+        await client.query("UPDATE email_jobs SET status='SCHEDULED',started_at=null,updated_at=now() WHERE id=$1 AND status='PROCESSING'", [job.id]);
+        await client.query("UPDATE contacts SET status=$1,updated_at=now() WHERE id=$2 AND status='PROCESSING'", [job.step_number ? "SENT" : "QUEUED", job.contact_id]);
+      });
+      return;
+    }
+    sendAttempted = true;
     const sent = await sendGmailMessage({
       accessToken: job.encrypted_access_token ? decryptSecret(job.encrypted_access_token) : undefined,
       refreshToken: decryptSecret(job.encrypted_refresh_token),
@@ -65,23 +100,36 @@ async function processJob(job: Job) {
     });
     await transaction(async (client) => {
       await client.query("UPDATE email_jobs SET status='SENT',sent_at=now(),rendered_subject=$1,rendered_body=$2,gmail_message_id=$3,gmail_thread_id=$4,error_message=null,updated_at=now() WHERE id=$5", [subject, body, sent.messageId, sent.threadId, job.id]);
-      await client.query("UPDATE contacts SET status='SENT',last_contacted_at=now(),last_error=null,updated_at=now() WHERE id=$1", [job.contact_id]);
+      const contact = await client.query<{ status: string }>("UPDATE contacts SET status=CASE WHEN status IN ('REPLIED','DO_NOT_CONTACT') THEN status ELSE 'SENT' END,last_contacted_at=now(),last_error=null,updated_at=now() WHERE id=$1 RETURNING status", [job.contact_id]);
+      const next = await client.query<{ template_id: string; version: number; delay_days: number }>(`SELECT f.template_id,t.version,f.delay_days FROM campaign_followups f JOIN message_templates t ON t.id=f.template_id
+        WHERE f.campaign_id=$1 AND f.step_number=$2`, [job.campaign_id, job.step_number + 1]);
+      if (next.rows[0] && !["REPLIED", "DO_NOT_CONTACT"].includes(contact.rows[0]?.status)) await client.query(`INSERT INTO email_jobs(workspace_id,campaign_id,contact_id,template_id,template_version,step_number,scheduled_at,idempotency_key)
+        VALUES($1,$2,$3,$4,$5,$6,now()+($7::int * interval '1 day'),$8) ON CONFLICT (campaign_id,contact_id,step_number) DO NOTHING`,
+        [job.workspace_id, job.campaign_id, job.contact_id, next.rows[0].template_id, next.rows[0].version, job.step_number + 1, next.rows[0].delay_days,
+          crypto.createHash("sha256").update(`${job.campaign_id}:${job.contact_id}:${job.step_number + 1}`).digest("hex")]);
       await client.query("INSERT INTO audit_logs(workspace_id,action,entity_type,entity_id,metadata) VALUES($1,'EMAIL_SENT','EMAIL_JOB',$2,$3)", [job.workspace_id, job.id, JSON.stringify({ detail: `Correo enviado a ${job.email}`, gmailMessageId: sent.messageId, gmailThreadId: sent.threadId })]);
       await client.query(
         `UPDATE campaigns SET status='COMPLETED',updated_at=now()
-         WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM email_jobs WHERE campaign_id=$1 AND status IN ('SCHEDULED','PROCESSING'))`,
+         WHERE id=$1 AND status='RUNNING' AND NOT EXISTS (SELECT 1 FROM email_jobs WHERE campaign_id=$1 AND status IN ('SCHEDULED','PROCESSING'))`,
         [job.campaign_id],
       );
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (!sendAttempted) {
+      await transaction(async (client) => {
+        await client.query("UPDATE email_jobs SET status='SCHEDULED',started_at=null,scheduled_at=now()+interval '15 minutes',error_message=$1,updated_at=now() WHERE id=$2", [message.slice(0, 1000), job.id]);
+        await client.query("UPDATE contacts SET status='SENT',updated_at=now() WHERE id=$1 AND status='PROCESSING'", [job.contact_id]);
+      });
+      return;
+    }
     await transaction(async (client) => {
       await client.query("UPDATE email_jobs SET status='ERROR',rendered_subject=$1,rendered_body=$2,error_message=$3,updated_at=now() WHERE id=$4", [subject, body, message.slice(0, 1000), job.id]);
-      await client.query("UPDATE contacts SET status='ERROR',last_error=$1,updated_at=now() WHERE id=$2", [message.slice(0, 1000), job.contact_id]);
+      await client.query("UPDATE contacts SET status=CASE WHEN status IN ('REPLIED','DO_NOT_CONTACT') THEN status ELSE 'ERROR' END,last_error=$1,updated_at=now() WHERE id=$2", [message.slice(0, 1000), job.contact_id]);
       await client.query("INSERT INTO audit_logs(workspace_id,action,entity_type,entity_id,metadata) VALUES($1,'EMAIL_ERROR','EMAIL_JOB',$2,$3)", [job.workspace_id, job.id, JSON.stringify({ detail: `Falló el envío a ${job.email}`, error: message })]);
       await client.query(
         `UPDATE campaigns SET status='COMPLETED',updated_at=now()
-         WHERE id=$1 AND NOT EXISTS (SELECT 1 FROM email_jobs WHERE campaign_id=$1 AND status IN ('SCHEDULED','PROCESSING'))`,
+         WHERE id=$1 AND status='RUNNING' AND NOT EXISTS (SELECT 1 FROM email_jobs WHERE campaign_id=$1 AND status IN ('SCHEDULED','PROCESSING'))`,
         [job.campaign_id],
       );
     });
@@ -99,6 +147,19 @@ type ReplyCheck = {
   encrypted_access_token: string | null;
   encrypted_refresh_token: string;
 };
+
+async function recordReply(item: ReplyCheck, reply: { messageId: string; from: string; receivedAt: Date }) {
+  await transaction(async (client) => {
+    const updated = await client.query("UPDATE email_jobs SET reply_message_id=$1,reply_from=$2,reply_detected_at=$3,last_reply_checked_at=now(),updated_at=now() WHERE id=$4 AND reply_detected_at IS NULL RETURNING id", [reply.messageId, reply.from, reply.receivedAt, item.id]);
+    if (!updated.rows[0]) return;
+    await client.query("UPDATE contacts SET status='REPLIED',updated_at=now() WHERE id=$1 AND status <> 'DO_NOT_CONTACT'", [item.contact_id]);
+    await client.query("UPDATE email_jobs SET status='CANCELLED',updated_at=now() WHERE contact_id=$1 AND status='SCHEDULED'", [item.contact_id]);
+    await client.query(`UPDATE campaigns c SET status='COMPLETED',updated_at=now() WHERE c.id IN
+      (SELECT campaign_id FROM email_jobs WHERE contact_id=$1) AND c.status IN ('SCHEDULED','RUNNING')
+      AND NOT EXISTS (SELECT 1 FROM email_jobs j WHERE j.campaign_id=c.id AND j.status IN ('SCHEDULED','PROCESSING'))`, [item.contact_id]);
+    await client.query("INSERT INTO audit_logs(workspace_id,action,entity_type,entity_id,metadata) VALUES($1,'REPLY_DETECTED','EMAIL_JOB',$2,$3)", [item.workspace_id, item.id, JSON.stringify({ detail: `Respuesta detectada de ${reply.from}`, replyMessageId: reply.messageId })]);
+  });
+}
 
 async function checkOneReply() {
   const result = await pool().query<ReplyCheck>(
@@ -120,15 +181,8 @@ async function checkOneReply() {
       accountEmail: item.google_email,
       sentAt: item.sent_at,
     });
-    await transaction(async (client) => {
-      if (reply) {
-        await client.query("UPDATE email_jobs SET reply_message_id=$1,reply_from=$2,reply_detected_at=$3,last_reply_checked_at=now(),updated_at=now() WHERE id=$4", [reply.messageId, reply.from, reply.receivedAt, item.id]);
-        await client.query("UPDATE contacts SET status='REPLIED',updated_at=now() WHERE id=$1 AND status NOT IN ('DO_NOT_CONTACT')", [item.contact_id]);
-        await client.query("INSERT INTO audit_logs(workspace_id,action,entity_type,entity_id,metadata) VALUES($1,'REPLY_DETECTED','EMAIL_JOB',$2,$3)", [item.workspace_id, item.id, JSON.stringify({ detail: `Respuesta detectada de ${reply.from}`, replyMessageId: reply.messageId })]);
-      } else {
-        await client.query("UPDATE email_jobs SET last_reply_checked_at=now(),updated_at=now() WHERE id=$1", [item.id]);
-      }
-    });
+    if (reply) await recordReply(item, reply);
+    else await pool().query("UPDATE email_jobs SET last_reply_checked_at=now(),updated_at=now() WHERE id=$1", [item.id]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[${workerId}] no se pudo revisar el hilo ${item.gmail_thread_id}: ${message}`);
@@ -137,9 +191,9 @@ async function checkOneReply() {
 }
 
 async function tick() {
+  await checkOneReply();
   const job = await claimJob();
   if (job) await processJob(job);
-  await checkOneReply();
 }
 
 async function main() {

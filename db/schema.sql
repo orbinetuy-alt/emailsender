@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   contact_id uuid NOT NULL REFERENCES contacts(id) ON DELETE RESTRICT,
   template_id uuid NOT NULL REFERENCES message_templates(id) ON DELETE RESTRICT,
   template_version integer NOT NULL,
+  step_number integer NOT NULL DEFAULT 0,
   status text NOT NULL DEFAULT 'SCHEDULED' CHECK (status IN ('SCHEDULED', 'PROCESSING', 'SENT', 'ERROR', 'CANCELLED')),
   scheduled_at timestamptz NOT NULL,
   started_at timestamptz,
@@ -159,7 +160,19 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   locked_by text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (campaign_id, contact_id)
+  UNIQUE (campaign_id, contact_id, step_number)
+);
+
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS step_number integer NOT NULL DEFAULT 0;
+ALTER TABLE email_jobs DROP CONSTRAINT IF EXISTS email_jobs_campaign_id_contact_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS email_jobs_campaign_contact_step_idx ON email_jobs(campaign_id,contact_id,step_number);
+
+CREATE TABLE IF NOT EXISTS campaign_followups (
+  campaign_id uuid NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+  step_number integer NOT NULL CHECK (step_number BETWEEN 1 AND 3),
+  delay_days integer NOT NULL CHECK (delay_days BETWEEN 1 AND 90),
+  template_id uuid NOT NULL REFERENCES message_templates(id) ON DELETE RESTRICT,
+  PRIMARY KEY (campaign_id,step_number)
 );
 
 CREATE INDEX IF NOT EXISTS email_jobs_due_idx ON email_jobs(status, scheduled_at);

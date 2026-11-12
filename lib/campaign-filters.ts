@@ -15,7 +15,7 @@ export type CampaignFilters = z.infer<typeof campaignFiltersSchema>;
 
 export function contactFilterSql(workspaceId: string, filters: CampaignFilters) {
   const values: unknown[] = [workspaceId];
-  const clauses = ["c.workspace_id=$1", "c.status IN ('DRAFT','READY','ERROR')"];
+  const clauses = ["c.workspace_id=$1", "c.status IN ('DRAFT','READY','ERROR')", "NOT EXISTS (SELECT 1 FROM email_jobs previous WHERE previous.contact_id=c.id AND previous.status IN ('SCHEDULED','PROCESSING','SENT'))"];
   const addArray = (column: string, selection: string[]) => {
     if (!selection.length) return;
     values.push(selection);

@@ -11,6 +11,7 @@ const schema = z.object({
   filters: campaignFiltersSchema,
   startAt: z.string().datetime().optional(),
   intervalMinutes: z.number().int().min(1).max(1440).default(5),
+  followups: z.array(z.object({ delayDays: z.number().int().min(1).max(90), templateId: z.string().uuid() })).max(3).default([]),
 });
 
 export async function POST(request: Request) {
@@ -20,11 +21,16 @@ export async function POST(request: Request) {
     const input = schema.parse(await request.json());
     const startAt = input.startAt ? new Date(input.startAt) : new Date();
     const result = await transaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [viewer.workspaceId]);
       const template = await client.query<{ id: string; version: number }>(
         "SELECT id,version FROM message_templates WHERE id=$1 AND workspace_id=$2 AND active=true",
         [input.templateId, viewer.workspaceId],
       );
       if (!template.rows[0]) throw new Error("La plantilla seleccionada no está disponible.");
+      for (const followup of input.followups) {
+        const selected = await client.query("SELECT 1 FROM message_templates WHERE id=$1 AND workspace_id=$2 AND active=true", [followup.templateId, viewer.workspaceId]);
+        if (!selected.rows[0]) throw new Error("Una plantilla de seguimiento no está disponible.");
+      }
       if (input.filters.importId) {
         const source = await client.query("SELECT 1 FROM contact_imports WHERE id=$1 AND workspace_id=$2", [input.filters.importId, viewer.workspaceId]);
         if (!source.rows[0]) throw new Error("La lista seleccionada no existe en este espacio.");
@@ -41,6 +47,9 @@ export async function POST(request: Request) {
         [viewer.workspaceId, input.name, startAt, input.intervalMinutes, viewer.userId, input.templateId, JSON.stringify(input.filters)],
       );
       const campaignId = campaign.rows[0].id;
+      for (const [index, followup] of input.followups.entries()) {
+        await client.query("INSERT INTO campaign_followups(campaign_id,step_number,delay_days,template_id) VALUES($1,$2,$3,$4)", [campaignId, index + 1, followup.delayDays, followup.templateId]);
+      }
       for (const [index, contact] of contacts.rows.entries()) {
         const scheduledAt = new Date(startAt.getTime() + index * input.intervalMinutes * 60_000);
         await client.query(
