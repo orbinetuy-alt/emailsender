@@ -40,6 +40,8 @@ export async function sendGmailMessage(input: {
   body: string;
   senderName?: string;
   senderEmail?: string;
+  threadId?: string;
+  replyToMessageId?: string;
 }) {
   const auth = googleOAuthClient();
   auth.setCredentials({ access_token: input.accessToken, refresh_token: input.refreshToken });
@@ -57,15 +59,29 @@ export async function sendGmailMessage(input: {
       : input.senderEmail;
     headers.unshift(`From: ${from}`);
   }
+  if (input.replyToMessageId) {
+    headers.push(`In-Reply-To: ${input.replyToMessageId}`);
+    headers.push(`References: ${input.replyToMessageId}`);
+  }
   const raw = `${headers.join("\r\n")}\r\n\r\n${Buffer.from(input.body, "utf8").toString("base64")}`;
   const response = await gmail.users.messages.send({
     userId: "me",
-    requestBody: { raw: Buffer.from(raw).toString("base64url") },
+    requestBody: { raw: Buffer.from(raw).toString("base64url"), threadId: input.threadId },
   });
   if (!response.data.id || !response.data.threadId) {
     throw new Error("Gmail no devolvió los identificadores del mensaje y del hilo.");
   }
   return { messageId: response.data.id, threadId: response.data.threadId };
+}
+
+export async function getGmailRfcMessageId(input: { accessToken?: string; refreshToken: string; messageId: string }) {
+  const auth = googleOAuthClient();
+  auth.setCredentials({ access_token: input.accessToken, refresh_token: input.refreshToken });
+  const gmail = google.gmail({ version: "v1", auth });
+  const message = await gmail.users.messages.get({ userId: "me", id: input.messageId, format: "metadata", metadataHeaders: ["Message-ID"] });
+  const id = message.data.payload?.headers?.find((header) => header.name?.toLowerCase() === "message-id")?.value;
+  if (!id) throw new Error("Gmail no devolvió el Message-ID del correo anterior.");
+  return id;
 }
 
 export async function findReplyInThread(input: {
@@ -83,16 +99,18 @@ export async function findReplyInThread(input: {
     userId: "me",
     id: input.threadId,
     format: "metadata",
-    metadataHeaders: ["From", "Date", "In-Reply-To", "References"],
+    metadataHeaders: ["From", "Date", "In-Reply-To", "References", "Auto-Submitted", "Precedence", "X-Autoreply", "X-Autorespond"],
   });
   const messages = response.data.messages || [];
   for (const message of messages) {
     if (!message.id || message.id === input.sentMessageId) continue;
+    if (message.labelIds?.includes("SENT")) continue;
     const timestamp = Number(message.internalDate || 0);
     if (timestamp && timestamp <= input.sentAt.getTime()) continue;
     const headers = new Map((message.payload?.headers || []).map((header) => [header.name?.toLowerCase(), header.value || ""]));
     const from = headers.get("from") || "";
     if (from.toLowerCase().includes(input.accountEmail.toLowerCase())) continue;
+    if (/^(auto-|list-)/i.test(headers.get("auto-submitted") || "") || /^(bulk|list|junk)$/i.test(headers.get("precedence") || "") || headers.has("x-autoreply") || headers.has("x-autorespond")) continue;
     return { messageId: message.id, from, receivedAt: timestamp ? new Date(timestamp) : new Date() };
   }
   return null;

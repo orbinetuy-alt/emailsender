@@ -3,11 +3,12 @@ import { isDemoMode, query } from "@/lib/db";
 
 export async function getDashboard(workspaceId: string) {
   if (isDemoMode()) return demoDashboard();
-  const [workspace, contacts, templates, campaigns, activity, imports] = await Promise.all([
+  const [workspace, contacts, templates, campaigns, activity, imports, worker, connection] = await Promise.all([
     query<{ sending_enabled: boolean }>("SELECT sending_enabled FROM workspaces WHERE id = $1", [workspaceId]),
     query(`SELECT id,name,company,email,company_type AS "companyType",hub,network,job_title AS "jobTitle",city,
       email_quality AS "emailQuality",existing_client_office AS "existingClientOffice",status,last_error AS "lastError",updated_at AS "updatedAt"
-      FROM contacts WHERE workspace_id = $1 ORDER BY updated_at DESC LIMIT 5000`, [workspaceId]),
+      FROM contacts c WHERE workspace_id = $1 AND NOT EXISTS
+      (SELECT 1 FROM email_jobs j WHERE j.contact_id=c.id) ORDER BY updated_at DESC LIMIT 5000`, [workspaceId]),
     query(`SELECT id, code, name, subject, body_text AS body, active, version FROM message_templates WHERE workspace_id = $1 ORDER BY code`, [workspaceId]),
     query(`SELECT c.id,c.name,c.status,c.start_at AS "startAt",c.filters,t.name AS "templateName",
       COUNT(DISTINCT j.contact_id) FILTER (WHERE j.step_number=0)::int AS total,
@@ -20,10 +21,14 @@ export async function getDashboard(workspaceId: string) {
     query(`SELECT id::text, action, COALESCE(metadata->>'detail', entity_type) AS detail, created_at AS "createdAt" FROM audit_logs WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 30`, [workspaceId]),
     query(`SELECT id,file_name AS "fileName",total_rows AS total,created_count AS created,updated_count AS updated,rejected_count AS rejected,
       created_at AS "createdAt" FROM contact_imports WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 10`, [workspaceId]),
+    query<{ online: boolean }>("SELECT EXISTS(SELECT 1 FROM worker_heartbeats WHERE last_seen_at > now()-interval '60 seconds') AS online"),
+    query<{ google_email: string }>("SELECT google_email FROM google_connections WHERE workspace_id=$1 AND encrypted_refresh_token IS NOT NULL", [workspaceId]),
   ]);
   return {
-    connected: true,
+    connected: Boolean(connection.rows[0]),
+    connectedEmail: connection.rows[0]?.google_email ?? null,
     sendingEnabled: workspace.rows[0]?.sending_enabled ?? false,
+    workerOnline: worker.rows[0]?.online ?? false,
     contacts: contacts.rows,
     templates: templates.rows,
     campaigns: campaigns.rows,

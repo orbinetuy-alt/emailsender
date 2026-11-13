@@ -141,6 +141,9 @@ CREATE TABLE IF NOT EXISTS email_jobs (
   contact_id uuid NOT NULL REFERENCES contacts(id) ON DELETE RESTRICT,
   template_id uuid NOT NULL REFERENCES message_templates(id) ON DELETE RESTRICT,
   template_version integer NOT NULL,
+  subject_snapshot text,
+  body_snapshot text,
+  contact_snapshot jsonb,
   step_number integer NOT NULL DEFAULT 0,
   status text NOT NULL DEFAULT 'SCHEDULED' CHECK (status IN ('SCHEDULED', 'PROCESSING', 'SENT', 'ERROR', 'CANCELLED')),
   scheduled_at timestamptz NOT NULL,
@@ -164,6 +167,9 @@ CREATE TABLE IF NOT EXISTS email_jobs (
 );
 
 ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS step_number integer NOT NULL DEFAULT 0;
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS subject_snapshot text;
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS body_snapshot text;
+ALTER TABLE email_jobs ADD COLUMN IF NOT EXISTS contact_snapshot jsonb;
 ALTER TABLE email_jobs DROP CONSTRAINT IF EXISTS email_jobs_campaign_id_contact_id_key;
 CREATE UNIQUE INDEX IF NOT EXISTS email_jobs_campaign_contact_step_idx ON email_jobs(campaign_id,contact_id,step_number);
 
@@ -172,8 +178,15 @@ CREATE TABLE IF NOT EXISTS campaign_followups (
   step_number integer NOT NULL CHECK (step_number BETWEEN 1 AND 3),
   delay_days integer NOT NULL CHECK (delay_days BETWEEN 1 AND 90),
   template_id uuid NOT NULL REFERENCES message_templates(id) ON DELETE RESTRICT,
+  subject_snapshot text,
+  body_snapshot text,
+  template_version integer,
   PRIMARY KEY (campaign_id,step_number)
 );
+
+ALTER TABLE campaign_followups ADD COLUMN IF NOT EXISTS subject_snapshot text;
+ALTER TABLE campaign_followups ADD COLUMN IF NOT EXISTS body_snapshot text;
+ALTER TABLE campaign_followups ADD COLUMN IF NOT EXISTS template_version integer;
 
 CREATE INDEX IF NOT EXISTS email_jobs_due_idx ON email_jobs(status, scheduled_at);
 
@@ -194,6 +207,11 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   entity_id text,
   metadata jsonb NOT NULL DEFAULT '{}',
   created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS worker_heartbeats (
+  worker_id text PRIMARY KEY,
+  last_seen_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS audit_workspace_created_idx ON audit_logs(workspace_id, created_at DESC);

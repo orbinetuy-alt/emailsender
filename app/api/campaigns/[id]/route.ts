@@ -63,3 +63,37 @@ export async function PATCH(request: Request, context: Context) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Error" }, { status: 400 });
   }
 }
+
+export async function DELETE(_request: Request, context: Context) {
+  try {
+    const viewer = await requireViewer();
+    if (isDemoMode()) return NextResponse.json({ error: "No disponible en modo demo." }, { status: 409 });
+    const { id } = await context.params;
+    const deleted = await transaction(async (client) => {
+      const campaign = await client.query<{ status: string }>("SELECT status FROM campaigns WHERE id=$1 AND workspace_id=$2 FOR UPDATE", [id, viewer.workspaceId]);
+      if (!campaign.rows[0]) throw new Error("Campaña no encontrada.");
+      if (campaign.rows[0].status !== "CANCELLED" && campaign.rows[0].status !== "COMPLETED") {
+        throw new Error("Cancelá o terminá la campaña antes de eliminarla.");
+      }
+      const processing = await client.query("SELECT 1 FROM email_jobs WHERE campaign_id=$1 AND status='PROCESSING' LIMIT 1", [id]);
+      if (processing.rows[0]) throw new Error("Esperá a que termine el envío en curso.");
+      const contacts = await client.query<{ contact_id: string }>("SELECT DISTINCT contact_id FROM email_jobs WHERE campaign_id=$1", [id]);
+      await client.query("DELETE FROM campaigns WHERE id=$1", [id]);
+      if (contacts.rows.length) {
+        const ids = contacts.rows.map((item) => item.contact_id);
+        await client.query(`DELETE FROM contact_import_items ii WHERE ii.contact_id=ANY($1::uuid[])
+          AND NOT EXISTS (SELECT 1 FROM email_jobs j WHERE j.contact_id=ii.contact_id)`, [ids]);
+        await client.query(`DELETE FROM contacts c WHERE c.id=ANY($1::uuid[])
+          AND NOT EXISTS (SELECT 1 FROM email_jobs j WHERE j.contact_id=c.id)
+          AND NOT EXISTS (SELECT 1 FROM contact_import_items ii WHERE ii.contact_id=c.id)`, [ids]);
+      }
+      await client.query(`DELETE FROM contact_imports ci WHERE ci.workspace_id=$1 AND NOT EXISTS
+        (SELECT 1 FROM contact_import_items ii WHERE ii.import_id=ci.id)`, [viewer.workspaceId]);
+      await client.query("INSERT INTO audit_logs(workspace_id,actor_user_id,action,entity_type,entity_id,metadata) VALUES($1,$2,'CAMPAIGN_DELETED','CAMPAIGN',$3,$4)", [viewer.workspaceId, viewer.userId, id, JSON.stringify({ detail: "Campaña y destinatarios exclusivos eliminados", contacts: contacts.rows.length })]);
+      return { deleted: true, contactsConsidered: contacts.rows.length };
+    });
+    return NextResponse.json(deleted);
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Error" }, { status: 400 });
+  }
+}

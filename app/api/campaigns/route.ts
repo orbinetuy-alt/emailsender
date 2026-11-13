@@ -10,7 +10,7 @@ const schema = z.object({
   templateId: z.string().uuid(),
   filters: campaignFiltersSchema,
   startAt: z.string().datetime().optional(),
-  intervalMinutes: z.number().int().min(1).max(1440).default(5),
+  intervalMinutes: z.number().int().min(5).max(1440).default(5),
   followups: z.array(z.object({ delayDays: z.number().int().min(1).max(90), templateId: z.string().uuid() })).max(3).default([]),
 });
 
@@ -22,22 +22,24 @@ export async function POST(request: Request) {
     const startAt = input.startAt ? new Date(input.startAt) : new Date();
     const result = await transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [viewer.workspaceId]);
-      const template = await client.query<{ id: string; version: number }>(
-        "SELECT id,version FROM message_templates WHERE id=$1 AND workspace_id=$2 AND active=true",
+      const template = await client.query<{ id: string; version: number; subject: string; body_text: string }>(
+        "SELECT id,version,subject,body_text FROM message_templates WHERE id=$1 AND workspace_id=$2 AND active=true",
         [input.templateId, viewer.workspaceId],
       );
       if (!template.rows[0]) throw new Error("La plantilla seleccionada no está disponible.");
+      const followupTemplates = [];
       for (const followup of input.followups) {
-        const selected = await client.query("SELECT 1 FROM message_templates WHERE id=$1 AND workspace_id=$2 AND active=true", [followup.templateId, viewer.workspaceId]);
+        const selected = await client.query<{ id: string; version: number; subject: string; body_text: string }>("SELECT id,version,subject,body_text FROM message_templates WHERE id=$1 AND workspace_id=$2 AND active=true", [followup.templateId, viewer.workspaceId]);
         if (!selected.rows[0]) throw new Error("Una plantilla de seguimiento no está disponible.");
+        followupTemplates.push(selected.rows[0]);
       }
       if (input.filters.importId) {
         const source = await client.query("SELECT 1 FROM contact_imports WHERE id=$1 AND workspace_id=$2", [input.filters.importId, viewer.workspaceId]);
         if (!source.rows[0]) throw new Error("La lista seleccionada no existe en este espacio.");
       }
       const filtered = contactFilterSql(viewer.workspaceId, input.filters);
-      const contacts = await client.query<{ id: string }>(
-        `SELECT c.id FROM contacts c WHERE ${filtered.where} ORDER BY c.created_at,c.id`,
+      const contacts = await client.query<{ id: string; name: string; email: string; company: string; company_type: string; hub: string; network: string; job_title: string; city: string; custom_fields: Record<string, unknown> }>(
+        `SELECT c.id,c.name,c.email,c.company,c.company_type,c.hub,c.network,c.job_title,c.city,c.custom_fields FROM contacts c WHERE ${filtered.where} ORDER BY c.created_at,c.id FOR UPDATE OF c`,
         filtered.values,
       );
       if (!contacts.rows.length) throw new Error("Los filtros no tienen contactos elegibles.");
@@ -48,14 +50,17 @@ export async function POST(request: Request) {
       );
       const campaignId = campaign.rows[0].id;
       for (const [index, followup] of input.followups.entries()) {
-        await client.query("INSERT INTO campaign_followups(campaign_id,step_number,delay_days,template_id) VALUES($1,$2,$3,$4)", [campaignId, index + 1, followup.delayDays, followup.templateId]);
+        const selected = followupTemplates[index];
+        await client.query("INSERT INTO campaign_followups(campaign_id,step_number,delay_days,template_id,subject_snapshot,body_snapshot,template_version) VALUES($1,$2,$3,$4,$5,$6,$7)",
+          [campaignId, index + 1, followup.delayDays, followup.templateId, selected.subject, selected.body_text, selected.version]);
       }
       for (const [index, contact] of contacts.rows.entries()) {
         const scheduledAt = new Date(startAt.getTime() + index * input.intervalMinutes * 60_000);
         await client.query(
-          `INSERT INTO email_jobs(workspace_id,campaign_id,contact_id,template_id,template_version,scheduled_at,idempotency_key)
-           VALUES($1,$2,$3,$4,$5,$6,$7)`,
-          [viewer.workspaceId, campaignId, contact.id, template.rows[0].id, template.rows[0].version, scheduledAt, crypto.createHash("sha256").update(`${campaignId}:${contact.id}`).digest("hex")],
+          `INSERT INTO email_jobs(workspace_id,campaign_id,contact_id,template_id,template_version,subject_snapshot,body_snapshot,contact_snapshot,scheduled_at,idempotency_key)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [viewer.workspaceId, campaignId, contact.id, template.rows[0].id, template.rows[0].version, template.rows[0].subject, template.rows[0].body_text,
+            JSON.stringify(contact), scheduledAt, crypto.createHash("sha256").update(`${campaignId}:${contact.id}`).digest("hex")],
         );
         await client.query("UPDATE contacts SET status='QUEUED',updated_at=now() WHERE id=$1", [contact.id]);
       }

@@ -15,6 +15,10 @@ export async function POST(request: Request) {
     }
     if (isDemoMode()) setDemoSending(input.enabled);
     else {
+      if (input.enabled) {
+        const connection = await query("SELECT 1 FROM google_connections WHERE workspace_id=$1 AND encrypted_refresh_token IS NOT NULL", [viewer.workspaceId]);
+        if (!connection.rows[0]) return NextResponse.json({ error: "Conectá Google antes de habilitar envíos." }, { status: 409 });
+      }
       await query("UPDATE workspaces SET sending_enabled = $1, updated_at = now() WHERE id = $2", [input.enabled, viewer.workspaceId]);
       await query("INSERT INTO audit_logs(workspace_id, actor_user_id, action, entity_type, metadata) VALUES ($1,$2,$3,'WORKSPACE',$4)", [viewer.workspaceId, viewer.userId, input.enabled ? "SENDING_ENABLED" : "SENDING_DISABLED", JSON.stringify({ detail: input.enabled ? "Se habilitaron los envíos" : "Se pausaron todos los envíos" })]);
     }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Contact = { id: string; name: string; company: string; email: string; companyType: string; hub?: string; network?: string; jobTitle?: string; city?: string; emailQuality?: string; existingClientOffice?: string; status: string; updatedAt: string; lastError?: string };
 type Template = { id: string; code: string; name: string; subject: string; body: string; active: boolean; version: number };
@@ -13,7 +13,9 @@ type ContactImport = { id: string; fileName: string; total: number; created: num
 type Dashboard = {
   viewer: { name: string; email: string };
   connected: boolean;
+  connectedEmail?: string | null;
   sendingEnabled: boolean;
+  workerOnline?: boolean;
   contacts: Contact[];
   templates: Template[];
   campaigns: Campaign[];
@@ -61,8 +63,12 @@ export default function DashboardClient() {
   const [campaign, setCampaign] = useState({ name: "", templateId: "", intervalMinutes: 5, startAt: "", filters: emptyFilters, followups: [] as { delayDays: number; templateId: string }[] });
   const [campaignCount, setCampaignCount] = useState(0);
   const [campaignRecipients, setCampaignRecipients] = useState<{ name: string; email: string; company: string }[]>([]);
+  const [campaignSample, setCampaignSample] = useState<{ to: string; subject: string; body: string } | null>(null);
   const [detail, setDetail] = useState<CampaignDetail | null>(null);
   const [recipientQuery, setRecipientQuery] = useState("");
+  const [newTemplateModal, setNewTemplateModal] = useState(false);
+  const [newTemplate, setNewTemplate] = useState({ name: "", subject: "", body: "" });
+  const replyCount = useRef<number | null>(null);
 
   async function load() {
     const response = await fetch("/api/dashboard", { cache: "no-store" });
@@ -72,12 +78,19 @@ export default function DashboardClient() {
       return;
     }
     if (!response.ok) throw new Error(body.error || "No se pudo cargar el panel.");
+    const replies = (body.campaigns as Campaign[]).reduce((total, item) => total + (item.replied || 0), 0);
+    if (replyCount.current !== null && replies > replyCount.current) notify(`${replies - replyCount.current} nueva(s) respuesta(s) detectada(s).`);
+    replyCount.current = replies;
     setAuthRequired(false);
     setData(body);
-    if (!activeTemplate && body.templates[0]) setActiveTemplate(body.templates[0].id);
+    if (body.templates[0]) setActiveTemplate((current) => current || body.templates[0].id);
   }
 
-  useEffect(() => { load().catch((error) => setToast(error.message)); }, []);
+  useEffect(() => {
+    load().catch((error) => setToast(error.message));
+    const interval = window.setInterval(() => load().catch(() => {}), 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
   useEffect(() => {
     const template = data?.templates.find((item) => item.id === activeTemplate);
     if (template) setEditor({ ...template });
@@ -86,13 +99,13 @@ export default function DashboardClient() {
     if (!campaignModal) return;
     const timeout = window.setTimeout(async () => {
       try {
-        const response = await fetch("/api/campaigns/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(campaign.filters) });
+        const response = await fetch("/api/campaigns/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...campaign.filters, templateId: campaign.templateId || undefined }) });
         const body = await response.json();
-        if (response.ok) { setCampaignCount(body.count); setCampaignRecipients(body.recipients || []); }
+        if (response.ok) { setCampaignCount(body.count); setCampaignRecipients(body.recipients || []); setCampaignSample(body.sample || null); }
       } catch { setCampaignCount(0); }
     }, 200);
     return () => window.clearTimeout(timeout);
-  }, [campaign.filters, campaignModal]);
+  }, [campaign.filters, campaign.templateId, campaignModal]);
 
   const filtered = useMemo(() => {
     if (!data) return [];
@@ -123,6 +136,22 @@ export default function DashboardClient() {
       const body = await response.json();
       if (!response.ok) throw new Error(body.error);
       await load(); notify("Plantilla guardada y versionada.");
+    } catch (error) { notify(error instanceof Error ? error.message : "Error"); }
+    finally { setBusy(false); }
+  }
+
+  async function createTemplate(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const response = await fetch("/api/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(newTemplate) });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      setNewTemplate({ name: "", subject: "", body: "" });
+      setNewTemplateModal(false);
+      await load();
+      setActiveTemplate(body.id);
+      notify("Plantilla creada.");
     } catch (error) { notify(error instanceof Error ? error.message : "Error"); }
     finally { setBusy(false); }
   }
@@ -212,6 +241,20 @@ export default function DashboardClient() {
     finally { setBusy(false); }
   }
 
+  async function deleteCampaign() {
+    if (!detail || !window.confirm("Esto eliminará la campaña, sus envíos y los destinatarios que no pertenezcan a otra campaña. ¿Continuar?")) return;
+    setBusy(true);
+    try {
+      const response = await fetch(`/api/campaigns/${detail.campaign.id}`, { method: "DELETE" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error);
+      setDetail(null);
+      await load();
+      notify("Campaña eliminada.");
+    } catch (error) { notify(error instanceof Error ? error.message : "Error"); }
+    finally { setBusy(false); }
+  }
+
   async function excludeRecipient(contactId: string) {
     if (!detail || !window.confirm("¿Excluir los próximos envíos a este contacto en esta campaña?")) return;
     setBusy(true);
@@ -245,7 +288,7 @@ export default function DashboardClient() {
   if (!data) return <div className="loading"><div className="loading-mark">R</div><p>{toast || "Preparando tu espacio…"}</p></div>;
 
   const nav = [
-    ["contacts", "contacts", "Contactos"], ["templates", "templates", "Plantillas"],
+    ["contacts", "contacts", "Excel del día"], ["templates", "templates", "Plantillas"],
     ["campaigns", "campaigns", "Campañas"], ["activity", "activity", "Actividad"], ["settings", "settings", "Configuración"],
   ];
 
@@ -255,21 +298,21 @@ export default function DashboardClient() {
         <div className="logo"><span>R</span><div><strong>Relay</strong><small>Workspace outreach</small></div></div>
         <nav>{nav.map(([id, icon, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}><Icon name={icon}/><span>{label}</span>{id === "contacts" && <em>{data.contacts.length}</em>}</button>)}</nav>
         <div className="sidebar-bottom">
-          <div className={`connection ${data.connected ? "ok" : ""}`}><span/><div><strong>{data.connected ? "Google conectado" : "Modo demostración"}</strong><small>{data.connected ? data.viewer.email : "Conectá Workspace al publicar"}</small></div></div>
+          <div className={`connection ${data.connected ? "ok" : ""}`}><span/><div><strong>{data.connected ? "Google conectado" : "Google sin conectar"}</strong><small>{data.connected ? data.connectedEmail || data.viewer.email : "Conectá la cuenta de envío"}</small></div></div>
           <div className="profile"><span>{data.viewer.name.charAt(0)}</span><div><strong>{data.viewer.name}</strong><small>Administradora</small></div><button>•••</button></div>
         </div>
       </aside>
 
       <main className="main">
-        <header className="topline"><div><span className={`pulse ${data.sendingEnabled ? "on" : ""}`}/>{data.sendingEnabled ? "Automatización activa" : "Envíos pausados"}</div><button className="ghost" onClick={() => load()}>Actualizar</button></header>
+        <header className="topline"><div><span className={`pulse ${data.sendingEnabled && data.workerOnline ? "on" : ""}`}/>{data.sendingEnabled ? data.workerOnline ? "Automatización activa" : "Worker desconectado: no se están procesando envíos" : "Envíos pausados"}</div><button className="ghost" onClick={() => load()}>Actualizar</button></header>
 
         {tab === "contacts" && <section>
-          <div className="page-title"><div><p className="eyebrow">BASE COMERCIAL</p><h1>Contactos</h1><p>Cargá la base diaria completa. Las campañas deciden después a quién contactar.</p></div><div className="title-actions"><button className="secondary" onClick={() => setContactModal("xlsx")}>Importar Excel</button><button className="primary" onClick={() => setContactModal("manual")}>+ Nuevo contacto</button></div></div>
+          <div className="page-title"><div><p className="eyebrow">PREPARAR ENVÍOS</p><h1>Excel del día</h1><p>Importá la planilla, revisá los destinatarios y creá una campaña. Las filas que no entren en ninguna campaña se eliminan tras 24 horas.</p></div><div className="title-actions"><button className="secondary" onClick={() => setContactModal("xlsx")}>Importar Excel</button><button className="primary" onClick={() => setContactModal("manual")}>+ Añadir destinatario</button></div></div>
           <div className="stats">
-            <article><span>Total de contactos</span><strong>{counts.total}</strong><small>en la base actual</small></article>
-            <article><span>En cola</span><strong>{counts.queued}</strong><small>programados o procesando</small></article>
-            <article><span>Enviados</span><strong>{counts.sent}</strong><small>confirmados por Gmail</small></article>
-            <article><span>Requieren atención</span><strong>{counts.errors}</strong><small>errores para revisar</small></article>
+            <article><span>Destinatarios disponibles</span><strong>{counts.total}</strong><small>sin campaña asignada</small></article>
+            <article><span>Planillas recientes</span><strong>{data.imports.length}</strong><small>archivos importados</small></article>
+            <article><span>Campañas</span><strong>{data.campaigns.length}</strong><small>resultados en su sección</small></article>
+            <article><span>Worker</span><strong>{data.workerOnline ? "Activo" : "Apagado"}</strong><small>envíos y respuestas</small></article>
           </div>
           <div className="card table-card">
             <div className="toolbar"><div className="search">⌕<input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nombre, empresa o email"/></div><select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">Todos los estados</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><span className="selection">{filtered.length} resultados</span><button className="secondary" onClick={() => { setTab("campaigns"); setCampaignModal(true); }}>Crear campaña</button></div>
@@ -279,7 +322,7 @@ export default function DashboardClient() {
         </section>}
 
         {tab === "templates" && <section>
-          <div className="page-title"><div><p className="eyebrow">CONTENIDO</p><h1>Plantillas</h1><p>Personalizá el mensaje para cada tipo de empresa y conservá su historial.</p></div><button className="primary">+ Nueva plantilla</button></div>
+          <div className="page-title"><div><p className="eyebrow">MENSAJES</p><h1>Plantillas</h1><p>Prepará el primer correo y los mensajes de seguimiento.</p></div><button className="primary" onClick={() => setNewTemplateModal(true)}>+ Nueva plantilla</button></div>
           <div className="template-layout"><div className="card template-list"><div className="section-head"><strong>Tipos de mensaje</strong><span>{data.templates.length}</span></div>{data.templates.map((template) => <button key={template.id} className={activeTemplate === template.id ? "active" : ""} onClick={() => setActiveTemplate(template.id)}><span>{template.code.replace("TIPO_", "0")}</span><div><strong>{template.name}</strong><small>{template.code} · versión {template.version}</small></div><em className={template.active ? "enabled" : ""}/></button>)}</div>
             {editor && <div className="card editor"><div className="editor-head"><div><p className="eyebrow">{editor.code}</p><h2>{editor.name}</h2></div><label className="toggle"><input type="checkbox" checked={editor.active} onChange={(e) => setEditor({ ...editor, active: e.target.checked })}/><span/></label></div><div className="form-row"><label>Nombre interno<input value={editor.name} onChange={(e) => setEditor({ ...editor, name: e.target.value })}/></label><label>Código<input value={editor.code} disabled/></label></div><label>Asunto<input value={editor.subject} onChange={(e) => setEditor({ ...editor, subject: e.target.value })}/></label><label>Mensaje<textarea value={editor.body} onChange={(e) => setEditor({ ...editor, body: e.target.value })}/></label><div className="variables"><span>Variables</span>{["{{nombre}}", "{{empresa}}", "{{email}}", "{{tipo}}", "{{hub}}", "{{red}}", "{{cargo}}", "{{ciudad}}"].map((variable) => <code key={variable}>{variable}</code>)}</div><div className="editor-actions"><span>Los cambios crean una nueva versión.</span><button className="primary" disabled={busy} onClick={saveTemplate}>Guardar cambios</button></div></div>}
           </div>
@@ -333,17 +376,23 @@ export default function DashboardClient() {
               <FilterPicker label="Calidad del email" options={data.filterOptions?.emailQualities || []} selected={campaign.filters.emailQualities} onChange={(emailQualities) => setCampaign({ ...campaign, filters: { ...campaign.filters, emailQualities } })}/>
             </div>
             <label className="check-row"><input type="checkbox" checked={campaign.filters.excludeExistingClients} onChange={(event) => setCampaign({ ...campaign, filters: { ...campaign.filters, excludeExistingClients: event.target.checked } })}/><span><strong>Excluir clientes actuales</strong><small>No incluye filas marcadas como “Ya es cliente”.</small></span></label>
-            <div className="form-row"><label>Inicio (opcional)<input type="datetime-local" value={campaign.startAt} onChange={(event) => setCampaign({ ...campaign, startAt: event.target.value })}/></label><label>Intervalo en minutos<input required type="number" min={1} max={1440} value={campaign.intervalMinutes} onChange={(event) => setCampaign({ ...campaign, intervalMinutes: Number(event.target.value) })}/></label></div>
-            <div className="followup-config"><strong>Seguimientos automáticos</strong><p>Se envían solo si el contacto no respondió. Cada plazo se cuenta desde el mensaje anterior.</p>{campaign.followups.map((followup, index) => <div className="form-row" key={index}><label>Después de (días)<input type="number" min={1} max={90} value={followup.delayDays} onChange={(event) => setCampaign({ ...campaign, followups: campaign.followups.map((item, i) => i === index ? { ...item, delayDays: Number(event.target.value) } : item) })}/></label><label>Mensaje de seguimiento<select required value={followup.templateId} onChange={(event) => setCampaign({ ...campaign, followups: campaign.followups.map((item, i) => i === index ? { ...item, templateId: event.target.value } : item) })}><option value="">Seleccionar…</option>{data.templates.filter((template) => template.active).map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label><button type="button" className="secondary" onClick={() => setCampaign({ ...campaign, followups: campaign.followups.filter((_, i) => i !== index) })}>Quitar</button></div>)}{campaign.followups.length < 3 && <button type="button" className="secondary" onClick={() => setCampaign({ ...campaign, followups: [...campaign.followups, { delayDays: 5, templateId: "" }] })}>+ Agregar seguimiento</button>}</div>
-            <div className="campaign-preview"><div><span>Destinatarios elegibles</span><strong>{campaignCount}</strong></div><p>Se enviará un mensaje cada {campaign.intervalMinutes} minutos. Los contactos ya enviados, pausados o que respondieron quedan fuera.</p><details><summary>Revisar destinatarios ({campaignRecipients.length})</summary><div className="recipient-preview-list">{campaignRecipients.map((item) => <div key={item.email}>{item.name} · {item.company || "Sin empresa"} · {item.email}</div>)}</div></details></div>
+            <div className="form-row"><label>Inicio (opcional)<input type="datetime-local" value={campaign.startAt} onChange={(event) => setCampaign({ ...campaign, startAt: event.target.value })}/></label><label>Intervalo en minutos<input required type="number" min={5} max={1440} value={campaign.intervalMinutes} onChange={(event) => setCampaign({ ...campaign, intervalMinutes: Number(event.target.value) })}/></label></div>
+            <div className="followup-config"><strong>Seguimientos automáticos</strong><p>Se envían solo si el contacto no respondió. Cada plazo se cuenta desde el mensaje anterior. El asunto se mantiene para continuar el mismo hilo de Gmail.</p>{campaign.followups.map((followup, index) => <div className="form-row" key={index}><label>Después de (días)<input type="number" min={1} max={90} value={followup.delayDays} onChange={(event) => setCampaign({ ...campaign, followups: campaign.followups.map((item, i) => i === index ? { ...item, delayDays: Number(event.target.value) } : item) })}/></label><label>Mensaje de seguimiento<select required value={followup.templateId} onChange={(event) => setCampaign({ ...campaign, followups: campaign.followups.map((item, i) => i === index ? { ...item, templateId: event.target.value } : item) })}><option value="">Seleccionar…</option>{data.templates.filter((template) => template.active).map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label><button type="button" className="secondary" onClick={() => setCampaign({ ...campaign, followups: campaign.followups.filter((_, i) => i !== index) })}>Quitar</button></div>)}{campaign.followups.length < 3 && <button type="button" className="secondary" onClick={() => setCampaign({ ...campaign, followups: [...campaign.followups, { delayDays: 5, templateId: "" }] })}>+ Agregar seguimiento</button>}</div>
+            <div className="campaign-preview"><div><span>Destinatarios elegibles</span><strong>{campaignCount}</strong></div><p>Se enviará un mensaje cada {campaign.intervalMinutes} minutos. Los contactos ya enviados, pausados o que respondieron quedan fuera.</p>{campaignSample && <details><summary>Ver ejemplo del correo</summary><div className="message-sample"><strong>Para: {campaignSample.to}</strong><strong>Asunto: {campaignSample.subject}</strong><pre>{campaignSample.body}</pre></div></details>}<details><summary>Revisar destinatarios ({campaignRecipients.length})</summary><div className="recipient-preview-list">{campaignRecipients.map((item) => <div key={item.email}>{item.name} · {item.company || "Sin empresa"} · {item.email}</div>)}</div></details></div>
             <div className="modal-actions"><button type="button" className="secondary" onClick={() => setCampaignModal(false)} disabled={busy}>Cancelar</button><button type="submit" className="primary" disabled={busy || !campaign.templateId || !campaignCount}>{busy ? "Creando…" : `Crear campaña (${campaignCount})`}</button></div>
           </form>
+        </div>
+      </div>}
+      {newTemplateModal && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) setNewTemplateModal(false); }}>
+        <div className="modal" role="dialog" aria-modal="true" aria-labelledby="new-template-title">
+          <div className="modal-head"><div><p className="eyebrow">MENSAJES</p><h2 id="new-template-title">Nueva plantilla</h2></div><button className="modal-close" onClick={() => setNewTemplateModal(false)} disabled={busy} aria-label="Cerrar">×</button></div>
+          <form className="modal-form" onSubmit={createTemplate}><label>Nombre interno<input required maxLength={120} value={newTemplate.name} onChange={(event) => setNewTemplate({ ...newTemplate, name: event.target.value })} placeholder="Ej. Seguimiento a los cinco días"/></label><label>Asunto<input required maxLength={250} value={newTemplate.subject} onChange={(event) => setNewTemplate({ ...newTemplate, subject: event.target.value })} placeholder="Ej. Una consulta para {{empresa}}"/></label><label>Mensaje<textarea required maxLength={20000} value={newTemplate.body} onChange={(event) => setNewTemplate({ ...newTemplate, body: event.target.value })} placeholder="Hola {{nombre}}, ..."/></label><div className="modal-actions"><button type="button" className="secondary" onClick={() => setNewTemplateModal(false)}>Cancelar</button><button type="submit" className="primary" disabled={busy}>Crear plantilla</button></div></form>
         </div>
       </div>}
       {detail && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDetail(null); }}>
         <div className="modal campaign-detail-modal" role="dialog" aria-modal="true" aria-labelledby="campaign-detail-title">
           <div className="modal-head"><div><p className="eyebrow">RESULTADOS DE CAMPAÑA</p><h2 id="campaign-detail-title">{detail.campaign.name}</h2><small>{detail.campaign.templateName} · {detail.campaign.status}</small></div><button className="modal-close" onClick={() => setDetail(null)} aria-label="Cerrar">×</button></div>
-          <div className="detail-actions">{["SCHEDULED", "RUNNING"].includes(detail.campaign.status) && <button className="secondary" disabled={busy} onClick={() => campaignAction("pause")}>Pausar</button>}{detail.campaign.status === "PAUSED" && <button className="primary" disabled={busy} onClick={() => campaignAction("resume")}>Reanudar</button>}{["SCHEDULED", "RUNNING", "PAUSED"].includes(detail.campaign.status) && <button className="danger" disabled={busy} onClick={() => campaignAction("cancel")}>Cancelar pendientes</button>}<button className="secondary" onClick={() => openCampaign(detail.campaign.id)}>Actualizar</button><button className="secondary" onClick={exportCampaign}>Descargar CSV</button></div>
+          <div className="detail-actions">{["SCHEDULED", "RUNNING"].includes(detail.campaign.status) && <button className="secondary" disabled={busy} onClick={() => campaignAction("pause")}>Pausar</button>}{detail.campaign.status === "PAUSED" && <button className="primary" disabled={busy} onClick={() => campaignAction("resume")}>Reanudar</button>}{["SCHEDULED", "RUNNING", "PAUSED"].includes(detail.campaign.status) && <button className="danger" disabled={busy} onClick={() => campaignAction("cancel")}>Cancelar pendientes</button>}{["COMPLETED", "CANCELLED"].includes(detail.campaign.status) && <button className="danger" disabled={busy} onClick={deleteCampaign}>Eliminar campaña</button>}<button className="secondary" onClick={() => openCampaign(detail.campaign.id)}>Actualizar</button><button className="secondary" onClick={exportCampaign}>Descargar CSV</button></div>
           <div className="detail-stats"><div><strong>{detail.recipients.length}</strong><span>Destinatarios</span></div><div><strong>{detail.recipients.filter((item) => item.sentCount > 0 && !item.replied).length}</strong><span>Sin respuesta</span></div><div><strong>{detail.recipients.filter((item) => item.replied).length}</strong><span>Respondieron</span></div><div><strong>{detail.recipients.filter((item) => item.errorCount > 0).length}</strong><span>Con errores</span></div></div>
           {!!detail.followups.length && <p className="detail-sequence">Secuencia: mensaje inicial {detail.followups.map((item) => `→ ${item.delayDays} días → ${item.templateName}`).join(" ")}</p>}
           <div className="search">⌕<input value={recipientQuery} onChange={(event) => setRecipientQuery(event.target.value)} placeholder="Buscar contacto o email"/></div>

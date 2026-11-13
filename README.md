@@ -1,18 +1,30 @@
-# Relay — plataforma de comunicación comercial
+# Relay — automatización de campañas de email
 
-Aplicación propia para administrar contactos, plantillas, campañas y envíos graduales desde Google Workspace.
+Aplicación para importar un Excel diario, seleccionar destinatarios, enviar correos desde Gmail y programar seguimientos opcionales. Cuando llega una respuesta, se marca como respondido y se cancelan los seguimientos pendientes. La aplicación no responde automáticamente.
 
 ## Arquitectura
 
 - Next.js + TypeScript para interfaz y API.
-- PostgreSQL como fuente de verdad.
+- PostgreSQL para la cola de envíos, campañas, plantillas, sesiones OAuth y estado de respuestas. No se usa como CRM.
 - OAuth 2.0 de Google para enviar y detectar respuestas mediante metadatos de Gmail.
 - Worker Node separado con bloqueo `FOR UPDATE SKIP LOCKED`.
 - Tokens de Google cifrados con AES-256-GCM.
-- Claves de idempotencia y restricciones únicas para impedir duplicados.
+- Claves de idempotencia y restricciones únicas para impedir duplicados dentro de una campaña.
 - Auditoría de acciones relevantes.
 
 La interfaz se inicia en `DEMO_MODE=true`: permite revisar y editar plantillas sin una base de datos ni credenciales reales. En producción debe configurarse PostgreSQL y cambiar `DEMO_MODE=false`.
+
+## Flujo diario y conservación
+
+1. Importar la planilla `.xlsx` del día. No se conserva el archivo original.
+2. Filtrar y revisar los destinatarios y un ejemplo del mensaje.
+3. Crear la campaña. Se guardan copias del contenido de las plantillas y los datos necesarios de los destinatarios seleccionados.
+4. Habilitar los envíos y mantener el proceso web y el worker en ejecución. Los correos iniciales se espacian según el intervalo de la campaña; los seguimientos se programan desde el envío anterior y siguen el mismo hilo de Gmail.
+5. Consultar resultados en la campaña. Una respuesta solo cambia su estado y cancela seguimientos pendientes.
+
+El worker elimina cada hora las listas importadas con más de 24 horas y los contactos que no estén en ninguna campaña. Eliminar una campaña terminada o cancelada borra sus trabajos y los contactos que no pertenezcan a otra campaña. El historial de esa campaña deja de estar disponible tras eliminarla. Las listas antiguas que ya existan también se eliminarán cuando arranque el worker.
+
+El diseño actual utiliza PostgreSQL porque el proceso web y el worker comparten una cola con bloqueos transaccionales. El volumen de contactos no exige PostgreSQL por capacidad; su función es conservar el estado operativo entre reinicios y coordinar ambos procesos.
 
 ## Desarrollo
 
@@ -72,7 +84,19 @@ El proceso web y el worker se despliegan por separado usando el mismo código y 
 npm run worker
 ```
 
-El worker reclama un único trabajo vencido de forma transaccional, marca el contacto como `PROCESSING`, envía mediante Gmail y registra `SENT` o `ERROR`. Si el proceso cae después de Gmail, el trabajo permanece `PROCESSING` para revisión manual y no se reenvía automáticamente.
+El worker reclama un único trabajo vencido de forma transaccional, marca el contacto como `PROCESSING`, envía mediante Gmail y registra `SENT` o `ERROR`. Si el proceso cae después de Gmail, el trabajo no se reenvía automáticamente.
+
+Un trabajo interrumpido pasa a `ERROR` después de 10 minutos con una indicación para revisar Gmail antes de volver a intentar. El panel muestra si el worker ha informado actividad durante el último minuto. Pausar una campaña impide reclamar nuevos envíos; uno que ya está en curso puede terminar. La pausa general de envíos no detiene la revisión de respuestas ni la limpieza de datos.
+
+En producción se requieren **dos procesos permanentes** (`npm run start` y `npm run worker`) conectados a la misma base PostgreSQL, HTTPS, un dominio público para OAuth y copias de seguridad de la base. Un hosting que suspenda el worker impedirá tanto los envíos como la detección de respuestas. El control maestro de envíos empieza deshabilitado.
+
+Para comprobar el flujo de campaña sin enviar correos, con la aplicación local encendida:
+
+```bash
+npm run smoke:campaign
+```
+
+La prueba crea un espacio temporal aislado y verifica vista previa, campaña, seguimiento, pausa, reanudación, cancelación y eliminación.
 
 ## Antes de habilitar envíos
 
